@@ -1,3 +1,5 @@
+This is a thin python client over the original ORB-SLAM3 code, aiming for minimal disruptions and minimal changes. 
+
 # ORB-SLAM3
 
 ### V1.0, December 22th, 2021
