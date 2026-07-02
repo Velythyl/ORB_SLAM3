@@ -141,6 +141,10 @@ orb-slam3 run --device /dev/video0 --privileged -- stereo_realsense_D435i \
 The GHCR image is built by `.github/workflows/ghcr.yml` on pushes to `main` or
 `master`, on version tags, and through manual workflow dispatch.
 
+Python client documentation for `pyorbslam3`, including runners, manifests,
+artifacts, atlas export, point clouds, Docker helpers, and current limitations,
+lives in [`docs/python_client.md`](docs/python_client.md).
+
 ## Building from source
 
 Clone the repository:

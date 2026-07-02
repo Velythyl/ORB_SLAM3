@@ -46,6 +46,7 @@ packages = ["pyorbslam3"]
 include = [
   "LICENSE",
   "README.md",
+  "docs/python_client.md",
   "pyproject.toml",
   "pyorbslam3",
 ]
