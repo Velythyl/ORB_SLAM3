@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  exec bash
+fi
+
+case "$1" in
+  help|--help|-h)
+    cat <<'EOF'
+ORB-SLAM3 container
+
+The source tree is available at /opt/orbslam3 and mounted user data should
+normally be placed under /work.
+
+Examples:
+  mono_tum /opt/orbslam3/Vocabulary/ORBvoc.txt /opt/orbslam3/Examples/Monocular/TUM1.yaml /work/rgbd_dataset_freiburg1_xyz
+  stereo_euroc /opt/orbslam3/Vocabulary/ORBvoc.txt /opt/orbslam3/Examples/Stereo/EuRoC.yaml /work/MH_01_easy /opt/orbslam3/Examples/Stereo/EuRoC_TimeStamps/MH01.txt
+  bash
+EOF
+    exit 0
+    ;;
+esac
+
+exec "$@"

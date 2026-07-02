@@ -6,6 +6,17 @@
 
 # Unignore all dirs
 !*/
+!Dockerfile
+!docker/build-orbslam3
+!docker/orbslam3-entrypoint
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+datasets/
+runs/
+pointclouds/
 
 CMakeLists.txt.user
 CMakeLists_modified.txt

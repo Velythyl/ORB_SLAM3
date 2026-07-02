@@ -81,6 +81,68 @@ We provide some examples to process input of a monocular, monocular-inertial, st
 
 # 3. Building ORB-SLAM3 library and examples
 
+## Installing with uv and Docker
+
+This fork can also be installed as a small `uv`-managed command line tool that
+runs ORB-SLAM3 from a prebuilt Docker image published to GHCR. This avoids
+requiring every user to compile Pangolin, OpenCV, DBoW2, g2o and ORB-SLAM3 on
+their host machine.
+
+Prerequisites:
+
+* [uv](https://docs.astral.sh/uv/)
+* Docker
+
+Install the runner directly from GitHub:
+
+```
+uv tool install git+https://github.com/Velythyl/ORB_SLAM3.git
+```
+
+Pull the default image:
+
+```
+orb-slam3 pull
+```
+
+Open a shell in the ORB-SLAM3 container:
+
+```
+orb-slam3 shell
+```
+
+Run an example against data in the current directory. The current directory is
+mounted at `/work` in the container, while the built ORB-SLAM3 tree lives at
+`/opt/orbslam3`.
+
+```
+orb-slam3 run -- mono_tum \
+  /opt/orbslam3/Vocabulary/ORBvoc.txt \
+  /opt/orbslam3/Examples/Monocular/TUM1.yaml \
+  /work/rgbd_dataset_freiburg1_xyz
+```
+
+The default container image is `ghcr.io/velythyl/orb_slam3:latest`. To test a
+different image without reinstalling the Python tool:
+
+```
+ORB_SLAM3_IMAGE=ghcr.io/your-user/orb_slam3:your-tag orb-slam3 shell
+```
+
+For camera access or GPU-enabled Docker runtimes, pass Docker options through
+the runner:
+
+```
+orb-slam3 run --device /dev/video0 --privileged -- stereo_realsense_D435i \
+  /opt/orbslam3/Vocabulary/ORBvoc.txt \
+  /opt/orbslam3/Examples/Stereo/RealSense_D435i.yaml
+```
+
+The GHCR image is built by `.github/workflows/ghcr.yml` on pushes to `main` or
+`master`, on version tags, and through manual workflow dispatch.
+
+## Building from source
+
 Clone the repository:
 ```
 git clone https://github.com/UZ-SLAMLab/ORB_SLAM3.git ORB_SLAM3

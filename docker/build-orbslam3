@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+jobs="${BUILD_JOBS:-${CMAKE_BUILD_PARALLEL_LEVEL:-2}}"
+
+echo "Configuring and building Thirdparty/DBoW2 ..."
+cmake -S Thirdparty/DBoW2 -B Thirdparty/DBoW2/build -DCMAKE_BUILD_TYPE=Release
+cmake --build Thirdparty/DBoW2/build --parallel "${jobs}"
+
+echo "Configuring and building Thirdparty/g2o ..."
+cmake -S Thirdparty/g2o -B Thirdparty/g2o/build -DCMAKE_BUILD_TYPE=Release
+cmake --build Thirdparty/g2o/build --parallel "${jobs}"
+
+echo "Uncompress vocabulary ..."
+tar -xf Vocabulary/ORBvoc.txt.tar.gz -C Vocabulary
+
+echo "Configuring and building ORB_SLAM3 ..."
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_OLD_EXAMPLES=OFF
+cmake --build build --parallel "${jobs}"
