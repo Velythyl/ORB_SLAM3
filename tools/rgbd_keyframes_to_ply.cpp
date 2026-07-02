@@ -220,6 +220,16 @@ int main(int argc, char** argv) {
         const auto depth = manifest.empty() ? read_image_list(dataset + "/depth.txt") : std::vector<ImageEntry>();
         const auto rgbd = manifest.empty() ? std::vector<RgbdEntry>() : read_manifest(manifest);
         const auto poses = read_poses(trajectory);
+        if (manifest.empty()) {
+            if (rgb.empty()) {
+                throw std::runtime_error("no RGB images found in " + dataset + "/rgb.txt");
+            }
+            if (depth.empty()) {
+                throw std::runtime_error("no depth images found in " + dataset + "/depth.txt");
+            }
+        } else if (rgbd.empty()) {
+            throw std::runtime_error("no RGB-D frames found in manifest " + manifest);
+        }
 
         std::vector<Point> points;
         points.reserve(poses.size() * 16000);

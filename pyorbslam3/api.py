@@ -262,6 +262,7 @@ class BaseRunner:
             output_dir=output.parent,
             frames=frames,
             manifest=manifest,
+            dataset=dataset,
             require_input=False,
         )
         command = [
@@ -317,7 +318,12 @@ class BaseRunner:
         output_dir.mkdir(parents=True, exist_ok=True)
         log = output_dir / "orb_slam3.log"
         settings = self._settings_for_run(output_dir, settings_append)
-        sequence_manifest = self._sequence_manifest(output_dir=output_dir, frames=frames, manifest=manifest)
+        sequence_manifest = self._sequence_manifest(
+            output_dir=output_dir,
+            frames=frames,
+            manifest=manifest,
+            dataset=dataset,
+        )
         executable = self._ensure_observation_helper(output_dir)
         command = self._observation_command(
             executable=executable,
@@ -412,6 +418,7 @@ class BaseRunner:
         output_dir: Path,
         frames: Iterable[SequenceFrame] | None,
         manifest: Path | None,
+        dataset: Path | None = None,
         require_input: bool = True,
     ) -> Path | None:
         if frames is None and manifest is None and not require_input:
@@ -427,15 +434,42 @@ class BaseRunner:
         generated.parent.mkdir(parents=True, exist_ok=True)
         with generated.open("w", encoding="utf-8") as handle:
             for index, frame in enumerate(frames or ()):
-                handle.write(self._manifest_row(frame, index))
+                handle.write(self._manifest_row(frame, index, dataset=dataset))
         return generated
 
-    def _manifest_row(self, frame: SequenceFrame, index: int) -> str:
+    def _manifest_row(self, frame: SequenceFrame, index: int, *, dataset: Path | None = None) -> str:
         if not isinstance(frame, ImageFrame):
             raise ValueError(f"{self.sensor} frame {index} must be an ImageFrame.")
         if frame.depth is not None:
             raise ValueError(f"{self.sensor} frame {index} includes a depth path.")
-        return f"{float(frame.timestamp):.9f} {frame.image}\n"
+        image = self._manifest_path(frame.image, dataset=dataset, frame_index=index, field="image")
+        return f"{float(frame.timestamp):.9f} {image}\n"
+
+    def _manifest_path(
+        self,
+        value: str | Path,
+        *,
+        dataset: Path | None,
+        frame_index: int,
+        field: str,
+    ) -> str:
+        path = Path(value)
+        if not path.is_absolute():
+            return path.as_posix()
+        if dataset is None:
+            raise ValueError(
+                f"Frame {frame_index} {field} path {path} is absolute; pass dataset=... "
+                "so it can be written relative to the dataset root."
+            )
+        dataset_root = Path(dataset)
+        if not dataset_root.is_absolute():
+            dataset_root = self.repo_root / dataset_root
+        try:
+            return path.resolve().relative_to(dataset_root.resolve()).as_posix()
+        except ValueError:
+            raise ValueError(
+                f"Frame {frame_index} {field} path {path} is outside dataset root {dataset_root.resolve()}."
+            ) from None
 
     def _settings_for_run(self, output_dir: Path, settings_append: Sequence[str]) -> str | Path:
         if not settings_append:
@@ -601,10 +635,12 @@ class StereoRunner(BaseRunner):
     sensor = "stereo"
     manifest_columns = ("timestamp", "left", "right")
 
-    def _manifest_row(self, frame: SequenceFrame, index: int) -> str:
+    def _manifest_row(self, frame: SequenceFrame, index: int, *, dataset: Path | None = None) -> str:
         if not isinstance(frame, StereoFrame):
             raise ValueError(f"Stereo frame {index} must be a StereoFrame with left and right image paths.")
-        return f"{float(frame.timestamp):.9f} {frame.left} {frame.right}\n"
+        left = self._manifest_path(frame.left, dataset=dataset, frame_index=index, field="left")
+        right = self._manifest_path(frame.right, dataset=dataset, frame_index=index, field="right")
+        return f"{float(frame.timestamp):.9f} {left} {right}\n"
 
     def _observation_command(
         self,
@@ -645,13 +681,17 @@ class RGBDRunner(BaseRunner):
             repo_root=repo_root,
         )
 
-    def _manifest_row(self, frame: SequenceFrame, index: int) -> str:
+    def _manifest_row(self, frame: SequenceFrame, index: int, *, dataset: Path | None = None) -> str:
         if isinstance(frame, RGBDFrame):
-            return f"{float(frame.timestamp):.9f} {frame.image} {frame.depth}\n"
+            image = self._manifest_path(frame.image, dataset=dataset, frame_index=index, field="image")
+            depth = self._manifest_path(frame.depth, dataset=dataset, frame_index=index, field="depth")
+            return f"{float(frame.timestamp):.9f} {image} {depth}\n"
         if isinstance(frame, ImageFrame):
             if frame.depth is None:
                 raise ValueError(f"RGB-D frame {index} is missing a depth path.")
-            return f"{float(frame.timestamp):.9f} {frame.image} {frame.depth}\n"
+            image = self._manifest_path(frame.image, dataset=dataset, frame_index=index, field="image")
+            depth = self._manifest_path(frame.depth, dataset=dataset, frame_index=index, field="depth")
+            return f"{float(frame.timestamp):.9f} {image} {depth}\n"
         raise ValueError(f"RGB-D frame {index} must be an RGBDFrame or ImageFrame with a depth path.")
 
     def _observation_command(

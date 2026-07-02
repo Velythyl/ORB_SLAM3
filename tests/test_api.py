@@ -86,6 +86,34 @@ def test_sequence_manifest_is_written_from_frames(tmp_path: Path) -> None:
     )
 
 
+def test_sequence_manifest_normalizes_absolute_frame_paths_under_dataset(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    dataset = root / "datasets/sequence"
+    runner = MonocularRunner(settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml", repo_root=root)
+
+    manifest = runner._sequence_manifest(
+        output_dir=root / "runs/out",
+        frames=[ImageFrame(1.0, dataset / "images/000001.png")],
+        manifest=None,
+        dataset=Path("datasets/sequence"),
+    )
+
+    assert manifest.read_text(encoding="utf-8") == "1.000000000 images/000001.png\n"
+
+
+def test_sequence_manifest_rejects_absolute_frame_paths_outside_dataset(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    runner = MonocularRunner(settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml", repo_root=root)
+
+    with pytest.raises(ValueError, match="outside dataset root"):
+        runner._sequence_manifest(
+            output_dir=root / "runs/out",
+            frames=[ImageFrame(1.0, root / "other/000001.png")],
+            manifest=None,
+            dataset=root / "datasets/sequence",
+        )
+
+
 def test_rgbd_sequence_manifest_requires_depth(tmp_path: Path) -> None:
     runner = RGBDRunner(settings="/opt/orbslam3/Examples/RGB-D/TUM1.yaml", repo_root=tmp_path)
 
