@@ -349,6 +349,86 @@ Install the viewer dependencies first:
 uv sync --extra viewer
 ```
 
+## Replica room0 Example
+
+The Replica example used the local Docker image because the default GHCR image
+does not publish an Apple Silicon manifest. Make sure Docker is running, then
+run from the repository root:
+
+```bash
+export ORB_SLAM3_IMAGE=orb-slam3:local
+```
+
+Run the RGB-D sequence with the checked-in Replica settings and manifest:
+
+```bash
+uv run python -c '
+from pathlib import Path
+from pyorbslam3 import RGBDRunner
+
+slam = RGBDRunner(
+    image="orb-slam3:local",
+    settings=Path("runs/replica_room0_smoke/configs/replica_rgbd.yaml"),
+    repo_root=Path.cwd(),
+)
+result = slam.run_sequence(
+    dataset=Path("datasets/Replica/room0"),
+    output_dir=Path("runs/replica_room0_rgbd"),
+    manifest=Path("runs/replica_room0_rgbd/configs/sequence_manifest.txt"),
+    no_display=True,
+)
+print(f"poses={len(result.poses)}")
+print(f"observations={len(result.observations)}")
+print(f"map_points={len(result.map_points)}")
+print(f"log={result.log}")
+'
+```
+
+Generate the colored keyframe point cloud:
+
+```bash
+uv run python -c '
+from pathlib import Path
+from pyorbslam3 import RGBDCamera, RGBDRunner
+from pyorbslam3.artifacts import read_ply_vertex_count
+
+slam = RGBDRunner(
+    image="orb-slam3:local",
+    settings=Path("runs/replica_room0_smoke/configs/replica_rgbd.yaml"),
+    repo_root=Path.cwd(),
+)
+ply = slam.make_pointcloud(
+    dataset=Path("datasets/Replica/room0"),
+    trajectory=Path("runs/replica_room0_rgbd/KeyFrameTrajectory.txt"),
+    output=Path("pointclouds/replica_room0_rgbd_keyframes.ply"),
+    manifest=Path("runs/replica_room0_rgbd/configs/sequence_manifest.txt"),
+    camera=RGBDCamera(fx=600.0, fy=600.0, cx=599.5, cy=339.5, depth_scale=6553.5),
+    stride=4,
+    min_depth=0.25,
+    max_depth=4.5,
+)
+print(f"ply={ply}")
+print(f"vertices={read_ply_vertex_count(ply)}")
+'
+```
+
+Open the 3D map visualization:
+
+```bash
+uv run python -c '
+from pathlib import Path
+from pyorbslam3 import view_pointcloud
+
+view_pointcloud(
+    Path("pointclouds/replica_room0_rgbd_keyframes.ply"),
+    window_name="Replica room0 ORB-SLAM3 Map",
+)
+'
+```
+
+On the last known run, this produced 31 keyframe poses, 120 observations,
+16,013 exported ORB-SLAM3 map points, and a 1,465,750 vertex PLY.
+
 ## Artifact Helpers
 
 These helpers are exported from `pyorbslam3`:
