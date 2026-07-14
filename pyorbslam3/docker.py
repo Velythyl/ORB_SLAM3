@@ -37,10 +37,21 @@ class CompletedRun:
 
 
 def docker_executable() -> str:
-    docker = shutil.which("docker")
-    if docker is None:
-        raise RuntimeError("Docker is required to run ORB-SLAM3. Install Docker and try again.")
-    return docker
+    runtime = os.environ.get("ORB_SLAM3_CONTAINER_RUNTIME")
+    if runtime:
+        executable = shutil.which(runtime)
+        if executable is None:
+            raise RuntimeError(
+                f"Container runtime {runtime!r} was requested by ORB_SLAM3_CONTAINER_RUNTIME but was not found."
+            )
+        return executable
+
+    for runtime in ("docker", "podman"):
+        executable = shutil.which(runtime)
+        if executable is not None:
+            return executable
+
+    raise RuntimeError("Docker or Podman is required to run ORB-SLAM3. Install one of them and try again.")
 
 
 def resolve_image(image: str | None = None) -> str:

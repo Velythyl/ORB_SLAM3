@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${ORB_SLAM3_ROOT:-/opt/orbslam3}"
+bin_dir="${root}/bin"
+includes=(
+    "-I${root}"
+    "-I${root}/include"
+    "-I${root}/include/CameraModels"
+    "-I${root}/Thirdparty/Sophus"
+    "-I/usr/include/eigen3"
+)
+linker_paths=(
+    "-L${root}/lib"
+    "-L/usr/local/lib"
+    "-Wl,-rpath,${root}/lib"
+    "-Wl,-rpath,/usr/local/lib"
+)
+common_flags=(-std=c++11 -O3 -DCOMPILEDWITHC11)
+read -r -a opencv_cflags <<< "$(pkg-config --cflags opencv4)"
+read -r -a opencv_libs <<< "$(pkg-config --libs opencv4)"
+
+mkdir -p "${bin_dir}"
+
+echo "Building sequence_observation_export ..."
+g++ "${common_flags[@]}" tools/sequence_observation_export.cpp \
+    -o "${bin_dir}/sequence_observation_export" \
+    "${includes[@]}" \
+    "${opencv_cflags[@]}" \
+    "${linker_paths[@]}" \
+    -lORB_SLAM3 -lpangolin -lOpenGL -lGLEW \
+    "${opencv_libs[@]}" -lpthread
+
+echo "Building rgbd_keyframes_to_ply ..."
+g++ "${common_flags[@]}" tools/rgbd_keyframes_to_ply.cpp \
+    -o "${bin_dir}/rgbd_keyframes_to_ply" \
+    "${includes[@]}" \
+    "${opencv_cflags[@]}" \
+    "${linker_paths[@]}" \
+    "${opencv_libs[@]}" -lpthread

@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from pyorbslam3 import ImageFrame, RGBDFrame, MonocularRunner, RGBDRunner, StereoFrame, StereoRunner
+from pyorbslam3.api import OBSERVATION_HELPER, POINTCLOUD_HELPER
+from pyorbslam3.docker import CompletedRun
 
 
 def test_absolute_path_under_repo_maps_to_work(tmp_path: Path) -> None:
@@ -33,18 +35,18 @@ def test_atlas_suffix_is_normalized(tmp_path: Path) -> None:
     assert (root / "maps").exists()
 
 
-def test_monocular_observation_export_command(tmp_path: Path) -> None:
+def test_monocular_observation_export_command_uses_baked_helper(tmp_path: Path) -> None:
     runner = MonocularRunner(settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml", repo_root=tmp_path)
 
     command = runner._observation_command(
-        executable=Path("runs/out/helpers/sequence_observation_export"),
+        executable=OBSERVATION_HELPER,
         dataset=Path("datasets/sequence"),
         settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml",
         output_dir=Path("runs/out"),
     )
 
     assert command == [
-        "/work/runs/out/helpers/sequence_observation_export",
+        OBSERVATION_HELPER,
         "monocular",
         "/opt/orbslam3/Vocabulary/ORBvoc.txt",
         "/opt/orbslam3/Examples/Monocular/TUM1.yaml",
@@ -58,7 +60,7 @@ def test_monocular_observation_export_command_accepts_manifest(tmp_path: Path) -
     runner = MonocularRunner(settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml", repo_root=tmp_path)
 
     command = runner._observation_command(
-        executable=Path("runs/out/helpers/sequence_observation_export"),
+        executable=OBSERVATION_HELPER,
         dataset=Path("datasets/sequence"),
         settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml",
         output_dir=Path("runs/out"),
@@ -171,7 +173,7 @@ def test_stereo_observation_requires_manifest(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Stereo runs require"):
         runner._observation_command(
-            executable=Path("runs/out/helpers/sequence_observation_export"),
+            executable=OBSERVATION_HELPER,
             dataset=Path("datasets/sequence"),
             settings="/opt/orbslam3/Examples/Stereo/EuRoC.yaml",
             output_dir=Path("runs/out"),
@@ -182,7 +184,7 @@ def test_stereo_observation_accepts_manifest(tmp_path: Path) -> None:
     runner = StereoRunner(settings="/opt/orbslam3/Examples/Stereo/EuRoC.yaml", repo_root=tmp_path)
 
     command = runner._observation_command(
-        executable=Path("runs/out/helpers/sequence_observation_export"),
+        executable=OBSERVATION_HELPER,
         dataset=Path("datasets/sequence"),
         settings="/opt/orbslam3/Examples/Stereo/EuRoC.yaml",
         output_dir=Path("runs/out"),
@@ -190,7 +192,7 @@ def test_stereo_observation_accepts_manifest(tmp_path: Path) -> None:
     )
 
     assert command[:7] == [
-        "/work/runs/out/helpers/sequence_observation_export",
+        OBSERVATION_HELPER,
         "stereo",
         "/opt/orbslam3/Vocabulary/ORBvoc.txt",
         "/opt/orbslam3/Examples/Stereo/EuRoC.yaml",
@@ -206,7 +208,7 @@ def test_rgbd_observation_requires_manifest(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="RGB-D runs require"):
         runner._observation_command(
-            executable=Path("runs/out/helpers/sequence_observation_export"),
+            executable=OBSERVATION_HELPER,
             dataset=Path("datasets/sequence"),
             settings="/opt/orbslam3/Examples/RGB-D/TUM1.yaml",
             output_dir=Path("runs/out"),
@@ -217,7 +219,7 @@ def test_rgbd_observation_accepts_manifest(tmp_path: Path) -> None:
     runner = RGBDRunner(settings="/opt/orbslam3/Examples/RGB-D/TUM1.yaml", repo_root=tmp_path)
 
     command = runner._observation_command(
-        executable=Path("runs/out/helpers/sequence_observation_export"),
+        executable=OBSERVATION_HELPER,
         dataset=Path("datasets/sequence"),
         settings="/opt/orbslam3/Examples/RGB-D/TUM1.yaml",
         output_dir=Path("runs/out"),
@@ -230,9 +232,6 @@ def test_rgbd_observation_accepts_manifest(tmp_path: Path) -> None:
 def test_rgbd_manifest_run_uses_dataset_agnostic_helper_without_association(tmp_path: Path, monkeypatch) -> None:
     runner = RGBDRunner(settings="/opt/orbslam3/Examples/RGB-D/TUM1.yaml", repo_root=tmp_path)
     captured = {}
-
-    def fake_ensure_helper(output_dir: Path) -> Path:
-        return output_dir / "helpers" / "sequence_observation_export"
 
     def fake_execute_run(**kwargs):
         captured.update(kwargs)
@@ -253,7 +252,6 @@ def test_rgbd_manifest_run_uses_dataset_agnostic_helper_without_association(tmp_
             sequence_manifest=kwargs["sequence_manifest"],
         )
 
-    monkeypatch.setattr(runner, "_ensure_observation_helper", fake_ensure_helper)
     monkeypatch.setattr(runner, "_execute_run", fake_execute_run)
 
     result = runner.run_dataset(
@@ -263,5 +261,26 @@ def test_rgbd_manifest_run_uses_dataset_agnostic_helper_without_association(tmp_
     )
 
     assert result.sequence_manifest == tmp_path / "runs/replica_room0/configs/sequence_manifest.txt"
+    assert captured["command"][0] == OBSERVATION_HELPER
     assert captured["command"][-2:] == ["--manifest", "/work/runs/replica_room0/configs/sequence_manifest.txt"]
     assert "associations.txt" not in captured["command"]
+
+
+def test_pointcloud_generation_uses_baked_helper(tmp_path: Path, monkeypatch) -> None:
+    runner = RGBDRunner(settings="/opt/orbslam3/Examples/RGB-D/TUM1.yaml", repo_root=tmp_path)
+    captured = {}
+
+    def fake_container(command, *, workdir: str, no_display: bool):
+        captured["command"] = command
+        return CompletedRun(tuple(command), 0)
+
+    monkeypatch.setattr(runner, "_container", fake_container)
+    monkeypatch.setattr("pyorbslam3.api.read_ply_vertex_count", lambda output: 1)
+
+    output = tmp_path / "pointclouds/sequence.ply"
+    assert runner.make_pointcloud(
+        dataset=Path("datasets/sequence"),
+        trajectory=Path("runs/sequence/KeyFrameTrajectory.txt"),
+        output=output,
+    ) == output
+    assert captured["command"][0] == POINTCLOUD_HELPER

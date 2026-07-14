@@ -33,11 +33,14 @@ RUN git clone --depth 1 --branch v0.6 https://github.com/stevenlovegrove/Pangoli
 COPY . ${ORB_SLAM3_ROOT}
 WORKDIR ${ORB_SLAM3_ROOT}
 
-RUN chmod +x docker/build-orbslam3 docker/orbslam3-entrypoint \
+RUN chmod +x docker/build-orbslam3 docker/build-helpers docker/orbslam3-entrypoint \
     && docker/build-orbslam3 \
+    && docker/build-helpers \
+    && test -x ${ORB_SLAM3_ROOT}/bin/sequence_observation_export \
+    && test -x ${ORB_SLAM3_ROOT}/bin/rgbd_keyframes_to_ply \
     && ldconfig
 
-ENV PATH="${ORB_SLAM3_ROOT}/Examples/RGB-D:${ORB_SLAM3_ROOT}/Examples/RGB-D-Inertial:${ORB_SLAM3_ROOT}/Examples/Stereo:${ORB_SLAM3_ROOT}/Examples/Monocular:${ORB_SLAM3_ROOT}/Examples/Monocular-Inertial:${ORB_SLAM3_ROOT}/Examples/Stereo-Inertial:${ORB_SLAM3_ROOT}/Examples/Calibration:${PATH}"
+ENV PATH="${ORB_SLAM3_ROOT}/bin:${ORB_SLAM3_ROOT}/Examples/RGB-D:${ORB_SLAM3_ROOT}/Examples/RGB-D-Inertial:${ORB_SLAM3_ROOT}/Examples/Stereo:${ORB_SLAM3_ROOT}/Examples/Monocular:${ORB_SLAM3_ROOT}/Examples/Monocular-Inertial:${ORB_SLAM3_ROOT}/Examples/Stereo-Inertial:${ORB_SLAM3_ROOT}/Examples/Calibration:${PATH}"
 
 WORKDIR /work
 ENTRYPOINT ["/opt/orbslam3/docker/orbslam3-entrypoint"]

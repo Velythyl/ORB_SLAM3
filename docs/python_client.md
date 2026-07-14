@@ -28,8 +28,9 @@ tests/test_artifacts.py    artifact parser behavior
 tests/test_docker.py       Docker command construction
 ```
 
-The Python runner compiles helper binaries into `output_dir/helpers/` on demand.
-Those helpers are executed inside Docker with the repository mounted at `/work`.
+The Docker image builds the helper binaries once at `/opt/orbslam3/bin/`.
+The Python runner executes those image-baked binaries directly, so parallel or
+repeated mapping runs do not compile helpers into their output directories.
 
 ## Install
 
@@ -351,83 +352,68 @@ uv sync --extra viewer
 
 ## Replica room0 Example
 
-The Replica example used the local Docker image because the default GHCR image
-does not publish an Apple Silicon manifest. Make sure Docker is running, then
-run from the repository root:
+This example uses the prebuilt GHCR image with Podman and stores the large
+Replica dataset under scratch instead of the repository:
 
 ```bash
-export ORB_SLAM3_IMAGE=orb-slam3:local
+export ORB_SLAM3_CONTAINER_RUNTIME=podman
+export ORB_SLAM3_IMAGE=ghcr.io/velythyl/orb_slam3:latest
+export ORB_SLAM3_SCRATCH="${SCRATCH}/ORB_SLAM3"
 ```
 
-Run the RGB-D sequence with the checked-in Replica settings and manifest:
+Download and extract the rendered Replica RGB-D dataset used by NICE-SLAM/iMAP:
 
 ```bash
-uv run python -c '
-from pathlib import Path
-from pyorbslam3 import RGBDRunner
-
-slam = RGBDRunner(
-    image="orb-slam3:local",
-    settings=Path("runs/replica_room0_smoke/configs/replica_rgbd.yaml"),
-    repo_root=Path.cwd(),
-)
-result = slam.run_sequence(
-    dataset=Path("datasets/Replica/room0"),
-    output_dir=Path("runs/replica_room0_rgbd"),
-    manifest=Path("runs/replica_room0_rgbd/configs/sequence_manifest.txt"),
-    no_display=True,
-)
-print(f"poses={len(result.poses)}")
-print(f"observations={len(result.observations)}")
-print(f"map_points={len(result.map_points)}")
-print(f"log={result.log}")
-'
+mkdir -p "${ORB_SLAM3_SCRATCH}/Datasets"
+wget -c https://cvg-data.inf.ethz.ch/nice-slam/data/Replica.zip \
+  -O "${ORB_SLAM3_SCRATCH}/Datasets/Replica.zip"
+unzip -q "${ORB_SLAM3_SCRATCH}/Datasets/Replica.zip" \
+  -d "${ORB_SLAM3_SCRATCH}/Datasets"
 ```
 
-Generate the colored keyframe point cloud:
+Generate the `room0` RGB-D manifest from the repository root:
 
 ```bash
-uv run python -c '
-from pathlib import Path
-from pyorbslam3 import RGBDCamera, RGBDRunner
-from pyorbslam3.artifacts import read_ply_vertex_count
-
-slam = RGBDRunner(
-    image="orb-slam3:local",
-    settings=Path("runs/replica_room0_smoke/configs/replica_rgbd.yaml"),
-    repo_root=Path.cwd(),
-)
-ply = slam.make_pointcloud(
-    dataset=Path("datasets/Replica/room0"),
-    trajectory=Path("runs/replica_room0_rgbd/KeyFrameTrajectory.txt"),
-    output=Path("pointclouds/replica_room0_rgbd_keyframes.ply"),
-    manifest=Path("runs/replica_room0_rgbd/configs/sequence_manifest.txt"),
-    camera=RGBDCamera(fx=600.0, fy=600.0, cx=599.5, cy=339.5, depth_scale=6553.5),
-    stride=4,
-    min_depth=0.25,
-    max_depth=4.5,
-)
-print(f"ply={ply}")
-print(f"vertices={read_ply_vertex_count(ply)}")
-'
+mkdir -p runs/replica_room0_rgbd/configs
+awk 'BEGIN { for (i = 0; i < 2000; i++) printf "%.9f results/frame%06d.jpg results/depth%06d.png\n", i / 30.0, i, i }' \
+  > runs/replica_room0_rgbd/configs/sequence_manifest.txt
 ```
 
-Open the 3D map visualization:
+Run Replica `room0` headlessly:
 
 ```bash
-uv run python -c '
-from pathlib import Path
-from pyorbslam3 import view_pointcloud
-
-view_pointcloud(
-    Path("pointclouds/replica_room0_rgbd_keyframes.ply"),
-    window_name="Replica room0 ORB-SLAM3 Map",
-)
-'
+podman run --rm \
+  -v "$PWD:/work" \
+  -v "${ORB_SLAM3_SCRATCH}:/scratch" \
+  -w /work/runs/replica_room0_rgbd \
+  "${ORB_SLAM3_IMAGE}" \
+  /opt/orbslam3/bin/sequence_observation_export rgbd /opt/orbslam3/Vocabulary/ORBvoc.txt /work/Examples/RGB-D/Replica.yaml /scratch/Datasets/Replica/room0 /work/runs/replica_room0_rgbd/observations.jsonl /work/runs/replica_room0_rgbd/map_points.csv --manifest /work/runs/replica_room0_rgbd/configs/sequence_manifest.txt
 ```
 
-On the last known run, this produced 31 keyframe poses, 120 observations,
-16,013 exported ORB-SLAM3 map points, and a 1,465,750 vertex PLY.
+Generate a colored keyframe point cloud:
+
+```bash
+mkdir -p pointclouds
+podman run --rm \
+  -v "$PWD:/work" \
+  -v "${ORB_SLAM3_SCRATCH}:/scratch" \
+  -w /work \
+  "${ORB_SLAM3_IMAGE}" \
+  /opt/orbslam3/bin/rgbd_keyframes_to_ply \
+  /scratch/Datasets/Replica/room0 \
+  /work/runs/replica_room0_rgbd/KeyFrameTrajectory.txt \
+  /work/pointclouds/replica_room0_rgbd_keyframes.ply \
+  --manifest /work/runs/replica_room0_rgbd/configs/sequence_manifest.txt \
+  --fx 600.0 --fy 600.0 --cx 599.5 --cy 339.5 --depth-scale 6553.5 \
+  --stride 4 --min-depth 0.25 --max-depth 4.5
+```
+
+On the July 9, 2026 run on this machine, the dataset lived at
+`/network/scratch/c/charlie.gauthier/ORB_SLAM3/Datasets/Replica/room0`.
+The run produced 2000 camera poses, 192 keyframe poses, 2000 posed
+observations, 57,014 exported ORB-SLAM3 map points, and an 8,750,588 vertex
+PLY at `pointclouds/replica_room0_rgbd_keyframes.ply`. The extracted dataset
+and retained zip each used about 12G in scratch.
 
 ## Artifact Helpers
 
@@ -570,7 +556,6 @@ Every high-level run writes logs under the output directory, usually:
 
 ```text
 output_dir/orb_slam3.log
-output_dir/helpers/sequence_observation_export.build.log
 ```
 
 Point cloud generation writes a sibling log next to the requested PLY:

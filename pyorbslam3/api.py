@@ -26,6 +26,9 @@ DEFAULT_LD_LIBRARY_PATH = (
     "/opt/orbslam3/Thirdparty/g2o/lib:"
     "/usr/local/lib"
 )
+IMAGE_HELPER_DIR = "/opt/orbslam3/bin"
+OBSERVATION_HELPER = f"{IMAGE_HELPER_DIR}/sequence_observation_export"
+POINTCLOUD_HELPER = f"{IMAGE_HELPER_DIR}/rgbd_keyframes_to_ply"
 
 @dataclass(frozen=True)
 class ImageFrame:
@@ -256,7 +259,6 @@ class BaseRunner:
     ) -> Path | None:
         output = Path(output)
         output.parent.mkdir(parents=True, exist_ok=True)
-        helper = self._ensure_pointcloud_helper(output.parent)
         log = output.with_suffix(output.suffix + ".log")
         pointcloud_manifest = self._sequence_manifest(
             output_dir=output.parent,
@@ -266,7 +268,7 @@ class BaseRunner:
             require_input=False,
         )
         command = [
-            self._container_path(helper),
+            POINTCLOUD_HELPER,
             self._container_path(dataset),
             self._container_path(trajectory),
             self._container_path(output),
@@ -324,9 +326,8 @@ class BaseRunner:
             manifest=manifest,
             dataset=dataset,
         )
-        executable = self._ensure_observation_helper(output_dir)
         command = self._observation_command(
-            executable=executable,
+            executable=OBSERVATION_HELPER,
             dataset=dataset,
             settings=settings,
             output_dir=output_dir,
@@ -494,80 +495,6 @@ class BaseRunner:
                 log=log,
             )
         return generated
-
-    def _ensure_pointcloud_helper(self, output_dir: Path) -> Path:
-        helper = output_dir / "helpers" / "rgbd_keyframes_to_ply"
-        if helper.exists():
-            return helper
-        helper.parent.mkdir(parents=True, exist_ok=True)
-        source = "/work/tools/rgbd_keyframes_to_ply.cpp"
-        log = helper.parent / "rgbd_keyframes_to_ply.build.log"
-        completed = self._container(
-            ["bash", "-lc", self._compile_cpp_command(source, self._container_path(helper), include_orbslam=False)],
-            workdir="/work",
-            no_display=True,
-        )
-        self._write_log(log, completed.stdout, completed.stderr)
-        if completed.returncode != 0:
-            raise OrbSlam3RunError(
-                "Failed to compile rgbd_keyframes_to_ply.",
-                returncode=completed.returncode,
-                command=completed.args,
-                log=log,
-            )
-        return helper
-
-    def _ensure_observation_helper(self, output_dir: Path) -> Path:
-        helper = output_dir / "helpers" / "sequence_observation_export"
-        if helper.exists():
-            return helper
-        helper.parent.mkdir(parents=True, exist_ok=True)
-        source = "/work/tools/sequence_observation_export.cpp"
-        log = helper.parent / "sequence_observation_export.build.log"
-        completed = self._container(
-            ["bash", "-lc", self._compile_cpp_command(source, self._container_path(helper))],
-            workdir="/work",
-            no_display=True,
-        )
-        self._write_log(log, completed.stdout, completed.stderr)
-        if completed.returncode != 0:
-            raise OrbSlam3RunError(
-                "Failed to compile sequence_observation_export.",
-                returncode=completed.returncode,
-                command=completed.args,
-                log=log,
-            )
-        return helper
-
-    def _compile_cpp_command(self, source: str, output: str, *, include_orbslam: bool = True) -> str:
-        includes = [
-            "-I/opt/orbslam3",
-            "-I/opt/orbslam3/include",
-            "-I/opt/orbslam3/include/CameraModels",
-            "-I/opt/orbslam3/Thirdparty/Sophus",
-            "-I/usr/include/eigen3",
-        ]
-        libs = [
-            "-L/opt/orbslam3/lib",
-            "-L/usr/local/lib",
-            "-Wl,-rpath,/opt/orbslam3/lib",
-            "-Wl,-rpath,/usr/local/lib",
-        ]
-        if include_orbslam:
-            libs.extend(["-lORB_SLAM3", "-lpangolin", "-lOpenGL", "-lGLEW"])
-        return " ".join(
-            [
-                "g++ -std=c++11 -O3 -DCOMPILEDWITHC11",
-                shlex.quote(source),
-                "-o",
-                shlex.quote(output),
-                *includes,
-                "$(pkg-config --cflags opencv4)",
-                *libs,
-                "$(pkg-config --libs opencv4)",
-                "-lpthread",
-            ]
-        )
 
     def _container(self, command: Sequence[str], *, workdir: str, no_display: bool):
         return run_container(

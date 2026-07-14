@@ -8,6 +8,7 @@
 !*/
 !Dockerfile
 !docker/build-orbslam3
+!docker/build-helpers
 !docker/orbslam3-entrypoint
 
 __pycache__/

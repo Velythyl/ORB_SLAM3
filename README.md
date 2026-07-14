@@ -86,14 +86,15 @@ We provide some examples to process input of a monocular, monocular-inertial, st
 ## Installing with uv and Docker
 
 This fork can also be installed as a small `uv`-managed command line tool that
-runs ORB-SLAM3 from a prebuilt Docker image published to GHCR. This avoids
-requiring every user to compile Pangolin, OpenCV, DBoW2, g2o and ORB-SLAM3 on
-their host machine.
+runs ORB-SLAM3 from a prebuilt Docker image published to GHCR. The image
+includes Pangolin, OpenCV, DBoW2, g2o, ORB-SLAM3, and the Python runner's
+trajectory and point-cloud helpers, so no compilation occurs on the host or
+for each mapping run.
 
 Prerequisites:
 
 * [uv](https://docs.astral.sh/uv/)
-* Docker
+* Docker or Podman
 
 Install the runner directly from GitHub:
 
@@ -106,6 +107,10 @@ Pull the default image:
 ```
 orb-slam3 pull
 ```
+
+The runner uses Docker when it is available and falls back to Podman otherwise.
+Set `ORB_SLAM3_CONTAINER_RUNTIME=podman` or `ORB_SLAM3_CONTAINER_RUNTIME=docker`
+to force a specific runtime.
 
 Open a shell in the ORB-SLAM3 container:
 

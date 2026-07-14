@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pyorbslam3.docker import ContainerOptions, build_docker_command
+from pyorbslam3.docker import docker_executable
 
 
 @patch("pyorbslam3.docker.docker_executable", return_value="/usr/bin/docker")
@@ -58,3 +59,15 @@ def test_includes_extra_runtime_options(_docker: object) -> None:
     assert "C=D" in command
     assert "1000:1000" in command
     assert "--privileged" in command
+
+
+@patch("pyorbslam3.docker.shutil.which", side_effect=lambda name: f"/usr/bin/{name}" if name == "podman" else None)
+def test_falls_back_to_podman_when_docker_is_missing(_which: object) -> None:
+    assert docker_executable() == "/usr/bin/podman"
+
+
+@patch("pyorbslam3.docker.shutil.which", return_value="/custom/runtime")
+def test_container_runtime_env_override(_which: object, monkeypatch) -> None:
+    monkeypatch.setenv("ORB_SLAM3_CONTAINER_RUNTIME", "podman")
+
+    assert docker_executable() == "/custom/runtime"
