@@ -70,6 +70,34 @@ def test_monocular_observation_export_command_accepts_manifest(tmp_path: Path) -
     assert command[-2:] == ["--manifest", "/work/runs/out/configs/sequence_manifest.txt"]
 
 
+def test_observation_export_can_disable_realtime_pacing(tmp_path: Path) -> None:
+    runner = MonocularRunner(settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml", repo_root=tmp_path)
+
+    command = runner._observation_command(
+        executable=OBSERVATION_HELPER,
+        dataset=Path("datasets/sequence"),
+        settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml",
+        output_dir=Path("runs/out"),
+        realtime=False,
+    )
+
+    assert command[-1] == "--no-realtime"
+
+
+def test_observation_export_can_run_synchronously(tmp_path: Path) -> None:
+    runner = MonocularRunner(settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml", repo_root=tmp_path)
+
+    command = runner._observation_command(
+        executable=OBSERVATION_HELPER,
+        dataset=Path("datasets/sequence"),
+        settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml",
+        output_dir=Path("runs/out"),
+        async_export=False,
+    )
+
+    assert command[-1] == "--sync-export"
+
+
 def test_sequence_manifest_is_written_from_frames(tmp_path: Path) -> None:
     runner = MonocularRunner(settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml", repo_root=tmp_path)
 

@@ -287,6 +287,28 @@ print(mapping.atlas)  # maps/my_sequence_map.osa
 without `.osa`; ORB-SLAM3 appends `.osa`, so the client normalizes the final
 host path for you.
 
+Offline runs reproduce source-frame pacing by default. Pass `realtime=False`
+to process the sequence as fast as possible:
+
+```python
+mapping = slam.build_map(
+    dataset=Path("datasets/my_sequence"),
+    atlas=Path("maps/my_sequence_map"),
+    output_dir=Path("runs/my_sequence_mapping_fast"),
+    manifest=Path("configs/my_sequence_manifest.txt"),
+    realtime=False,
+)
+```
+
+The helper snapshots every posed observation immediately after tracking, then
+writes JSONL in a bounded background queue. The atlas, `observations.jsonl`,
+and `map_points.csv` outputs are still produced. Fast replay can alter
+background-mapper scheduling, so compare its trajectory and map completeness
+with a paced baseline before adopting it for production.
+
+Pass `async_export=False` to retain the prior synchronous JSONL-writing path
+when debugging or comparing runtime behavior.
+
 Localization mode is not implemented yet. Calling `localize(...)` raises
 `NotImplementedError`.
 

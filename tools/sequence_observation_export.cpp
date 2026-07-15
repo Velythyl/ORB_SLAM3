@@ -1,14 +1,20 @@
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 #include <opencv2/core/core.hpp>
@@ -35,6 +41,26 @@ struct ExportedMapPoint {
     int observations = 0;
     int found = 0;
     string descriptor_hex;
+};
+
+struct ExportedFeature {
+    float x = 0.0f;
+    float y = 0.0f;
+    float size = 0.0f;
+    float angle = 0.0f;
+    float response = 0.0f;
+    int octave = 0;
+    int class_id = 0;
+    bool has_map_point = false;
+    long unsigned int map_point_id = 0;
+};
+
+struct ExportedObservation {
+    int frame_index = 0;
+    ImageEntry entry;
+    int tracking_state = 0;
+    Sophus::SE3f Tcw;
+    vector<ExportedFeature> features;
 };
 
 static vector<ImageEntry> load_mono_images(const string& dataset) {
@@ -195,8 +221,7 @@ static bool pose_is_valid(const Sophus::SE3f& pose, int tracking_state) {
     return (tracking_state == 2 || tracking_state == 3 || tracking_state == 5) && !pose.matrix().hasNaN();
 }
 
-static void write_observation(
-    ostream& out,
+static ExportedObservation capture_observation(
     int frame_index,
     const ImageEntry& entry,
     int tracking_state,
@@ -206,28 +231,13 @@ static void write_observation(
     const vector<cv::KeyPoint> keypoints = slam.GetTrackedKeyPointsUn();
     const vector<ORB_SLAM3::MapPoint*> tracked_points = slam.GetTrackedMapPoints();
 
-    out << fixed << setprecision(9);
-    out << "{\"frame_index\":" << frame_index
-        << ",\"timestamp\":" << entry.timestamp
-        << ",\"image\":\"" << json_escape(entry.image) << "\"";
-    if (entry.right.empty()) {
-        out << ",\"right\":null";
-    } else {
-        out << ",\"right\":\"" << json_escape(entry.right) << "\"";
-    }
-    if (entry.depth.empty()) {
-        out << ",\"depth\":null";
-    } else {
-        out << ",\"depth\":\"" << json_escape(entry.depth) << "\"";
-    }
-    out << ",\"tracking_state\":" << tracking_state << ",\"pose\":";
-    if (pose_is_valid(Tcw, tracking_state)) {
-        write_pose_json(out, Tcw);
-    } else {
-        out << "null";
-    }
+    ExportedObservation observation;
+    observation.frame_index = frame_index;
+    observation.entry = entry;
+    observation.tracking_state = tracking_state;
+    observation.Tcw = Tcw;
+    observation.features.reserve(keypoints.size());
 
-    out << ",\"features\":[";
     for (size_t i = 0; i < keypoints.size(); ++i) {
         ORB_SLAM3::MapPoint* point = i < tracked_points.size() ? tracked_points[i] : nullptr;
         const bool has_point = point && !point->isBad();
@@ -236,20 +246,63 @@ static void write_observation(
         }
 
         const cv::KeyPoint& kp = keypoints[i];
+        ExportedFeature feature;
+        feature.x = kp.pt.x;
+        feature.y = kp.pt.y;
+        feature.size = kp.size;
+        feature.angle = kp.angle;
+        feature.response = kp.response;
+        feature.octave = kp.octave;
+        feature.class_id = kp.class_id;
+        feature.has_map_point = has_point;
+        if (has_point) {
+            feature.map_point_id = point->mnId;
+        }
+        observation.features.push_back(feature);
+    }
+
+    return observation;
+}
+
+static void write_observation(ostream& out, const ExportedObservation& observation) {
+    out << fixed << setprecision(9);
+    out << "{\"frame_index\":" << observation.frame_index
+        << ",\"timestamp\":" << observation.entry.timestamp
+        << ",\"image\":\"" << json_escape(observation.entry.image) << "\"";
+    if (observation.entry.right.empty()) {
+        out << ",\"right\":null";
+    } else {
+        out << ",\"right\":\"" << json_escape(observation.entry.right) << "\"";
+    }
+    if (observation.entry.depth.empty()) {
+        out << ",\"depth\":null";
+    } else {
+        out << ",\"depth\":\"" << json_escape(observation.entry.depth) << "\"";
+    }
+    out << ",\"tracking_state\":" << observation.tracking_state << ",\"pose\":";
+    if (pose_is_valid(observation.Tcw, observation.tracking_state)) {
+        write_pose_json(out, observation.Tcw);
+    } else {
+        out << "null";
+    }
+
+    out << ",\"features\":[";
+    for (size_t i = 0; i < observation.features.size(); ++i) {
+        const ExportedFeature& feature = observation.features[i];
         if (i > 0) {
             out << ",";
         }
         out << "{\"index\":" << i
-            << ",\"x\":" << kp.pt.x
-            << ",\"y\":" << kp.pt.y
-            << ",\"size\":" << kp.size
-            << ",\"angle\":" << kp.angle
-            << ",\"response\":" << kp.response
-            << ",\"octave\":" << kp.octave
-            << ",\"class_id\":" << kp.class_id
+            << ",\"x\":" << feature.x
+            << ",\"y\":" << feature.y
+            << ",\"size\":" << feature.size
+            << ",\"angle\":" << feature.angle
+            << ",\"response\":" << feature.response
+            << ",\"octave\":" << feature.octave
+            << ",\"class_id\":" << feature.class_id
             << ",\"map_point_id\":";
-        if (has_point) {
-            out << point->mnId;
+        if (feature.has_map_point) {
+            out << feature.map_point_id;
         } else {
             out << "null";
         }
@@ -257,6 +310,68 @@ static void write_observation(
     }
     out << "]}\n";
 }
+
+class ObservationWriter {
+public:
+    explicit ObservationWriter(ostream& out) : out_(out), thread_(&ObservationWriter::Run, this) {}
+
+    ~ObservationWriter() {
+        Close();
+    }
+
+    void Push(ExportedObservation observation) {
+        unique_lock<mutex> lock(mutex_);
+        not_full_.wait(lock, [this] { return queue_.size() < kMaxPendingObservations || closed_; });
+        if (closed_) {
+            throw runtime_error("cannot add an observation after the writer is closed");
+        }
+        queue_.push_back(std::move(observation));
+        not_empty_.notify_one();
+    }
+
+    void Close() {
+        {
+            lock_guard<mutex> lock(mutex_);
+            if (closed_) {
+                return;
+            }
+            closed_ = true;
+        }
+        not_empty_.notify_all();
+        not_full_.notify_all();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+private:
+    static const size_t kMaxPendingObservations = 32;
+
+    void Run() {
+        while (true) {
+            ExportedObservation observation;
+            {
+                unique_lock<mutex> lock(mutex_);
+                not_empty_.wait(lock, [this] { return closed_ || !queue_.empty(); });
+                if (queue_.empty()) {
+                    return;
+                }
+                observation = std::move(queue_.front());
+                queue_.pop_front();
+                not_full_.notify_one();
+            }
+            write_observation(out_, observation);
+        }
+    }
+
+    ostream& out_;
+    deque<ExportedObservation> queue_;
+    mutex mutex_;
+    condition_variable not_empty_;
+    condition_variable not_full_;
+    bool closed_ = false;
+    thread thread_;
+};
 
 static void write_map_points_csv(const string& path, const map<long unsigned int, ExportedMapPoint>& points) {
     ofstream out(path);
@@ -298,9 +413,9 @@ static ORB_SLAM3::System::eSensor orb_sensor(const string& sensor) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 7 && argc != 8 && argc != 9) {
+    if (argc < 7) {
         cerr << "usage: sequence_observation_export SENSOR VOCAB SETTINGS DATASET OBSERVATIONS_JSONL MAP_POINTS_CSV [ASSOCIATION]\n";
-        cerr << "       sequence_observation_export SENSOR VOCAB SETTINGS DATASET OBSERVATIONS_JSONL MAP_POINTS_CSV --manifest MANIFEST\n";
+        cerr << "       sequence_observation_export SENSOR VOCAB SETTINGS DATASET OBSERVATIONS_JSONL MAP_POINTS_CSV [--manifest MANIFEST] [--no-realtime] [--sync-export]\n";
         return 2;
     }
 
@@ -312,15 +427,26 @@ int main(int argc, char** argv) {
     const string map_points_path = argv[6];
     string association;
     string manifest;
-    if (argc == 8) {
-        association = argv[7];
-    } else if (argc == 9) {
-        const string flag = argv[7];
-        if (flag != "--manifest") {
-            cerr << "error: expected --manifest before manifest path\n";
+    bool realtime = true;
+    bool async_export = true;
+    for (int arg = 7; arg < argc; ++arg) {
+        const string value = argv[arg];
+        if (value == "--manifest") {
+            if (++arg == argc) {
+                cerr << "error: --manifest requires a path\n";
+                return 2;
+            }
+            manifest = argv[arg];
+        } else if (value == "--no-realtime") {
+            realtime = false;
+        } else if (value == "--sync-export") {
+            async_export = false;
+        } else if (association.empty()) {
+            association = value;
+        } else {
+            cerr << "error: unexpected argument " << value << "\n";
             return 2;
         }
-        manifest = argv[8];
     }
 
     try {
@@ -348,6 +474,10 @@ int main(int argc, char** argv) {
         ofstream observations(observations_path);
         if (!observations) {
             throw runtime_error("failed to open " + observations_path);
+        }
+        unique_ptr<ObservationWriter> observation_writer;
+        if (async_export) {
+            observation_writer.reset(new ObservationWriter(observations));
         }
 
         map<long unsigned int, ExportedMapPoint> map_points;
@@ -404,19 +534,30 @@ int main(int argc, char** argv) {
             const auto end = chrono::steady_clock::now();
             tracking_times[i] = chrono::duration_cast<chrono::duration<float> >(end - start).count();
 
-            write_observation(observations, static_cast<int>(i), entry, slam.GetTrackingState(), Tcw, slam, map_points);
-
-            double wait_time = 0.0;
-            if (i + 1 < entries.size()) {
-                wait_time = entries[i + 1].timestamp - entry.timestamp;
-            } else if (i > 0) {
-                wait_time = entry.timestamp - entries[i - 1].timestamp;
+            ExportedObservation observation = capture_observation(
+                static_cast<int>(i), entry, slam.GetTrackingState(), Tcw, slam, map_points);
+            if (observation_writer) {
+                observation_writer->Push(std::move(observation));
+            } else {
+                write_observation(observations, observation);
             }
-            if (tracking_times[i] < wait_time) {
-                usleep((wait_time - tracking_times[i]) * 1e6);
+
+            if (realtime) {
+                double wait_time = 0.0;
+                if (i + 1 < entries.size()) {
+                    wait_time = entries[i + 1].timestamp - entry.timestamp;
+                } else if (i > 0) {
+                    wait_time = entry.timestamp - entries[i - 1].timestamp;
+                }
+                if (tracking_times[i] < wait_time) {
+                    usleep((wait_time - tracking_times[i]) * 1e6);
+                }
             }
         }
 
+        if (observation_writer) {
+            observation_writer->Close();
+        }
         slam.Shutdown();
 
         sort(tracking_times.begin(), tracking_times.end());

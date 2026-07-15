@@ -161,6 +161,8 @@ class BaseRunner:
         frames: Iterable[SequenceFrame] | None = None,
         manifest: Path | None = None,
         no_display: bool = True,
+        realtime: bool = True,
+        async_export: bool = True,
     ) -> RunResult:
         """Run an explicit timestamped image sequence.
 
@@ -173,6 +175,8 @@ class BaseRunner:
             frames=frames,
             manifest=manifest,
             no_display=no_display,
+            realtime=realtime,
+            async_export=async_export,
         )
 
     def run_sequence(
@@ -183,6 +187,8 @@ class BaseRunner:
         frames: Iterable[SequenceFrame] | None = None,
         manifest: Path | None = None,
         no_display: bool = True,
+        realtime: bool = True,
+        async_export: bool = True,
     ) -> RunResult:
         """Run an arbitrary timestamped image sequence.
 
@@ -196,6 +202,8 @@ class BaseRunner:
             frames=frames,
             manifest=manifest,
             no_display=no_display,
+            realtime=realtime,
+            async_export=async_export,
         )
 
     def build_map(
@@ -207,6 +215,8 @@ class BaseRunner:
         no_display: bool = True,
         frames: Iterable[SequenceFrame] | None = None,
         manifest: Path | None = None,
+        realtime: bool = True,
+        async_export: bool = True,
     ) -> RunResult:
         atlas_value, final_atlas = self._atlas_paths(atlas)
         return self._run_manifest_sequence(
@@ -215,6 +225,8 @@ class BaseRunner:
             frames=frames,
             manifest=manifest,
             no_display=no_display,
+            realtime=realtime,
+            async_export=async_export,
             settings_append=(f'System.SaveAtlasToFile: "{atlas_value}"',),
             atlas=final_atlas,
         )
@@ -228,6 +240,8 @@ class BaseRunner:
         frames: Iterable[ImageFrame] | None = None,
         manifest: Path | None = None,
         no_display: bool = True,
+        realtime: bool = True,
+        async_export: bool = True,
     ) -> RunResult:
         return self.build_map(
             dataset=dataset,
@@ -236,6 +250,8 @@ class BaseRunner:
             frames=frames,
             manifest=manifest,
             no_display=no_display,
+            realtime=realtime,
+            async_export=async_export,
         )
 
     def localize(self, *args: object, **kwargs: object) -> RunResult:
@@ -313,6 +329,8 @@ class BaseRunner:
         frames: Iterable[ImageFrame] | None,
         manifest: Path | None,
         no_display: bool,
+        realtime: bool,
+        async_export: bool,
         settings_append: Sequence[str] = (),
         atlas: Path | None = None,
     ) -> RunResult:
@@ -332,6 +350,8 @@ class BaseRunner:
             settings=settings,
             output_dir=output_dir,
             manifest=sequence_manifest,
+            realtime=realtime,
+            async_export=async_export,
         )
         return self._execute_run(
             command=command,
@@ -351,6 +371,8 @@ class BaseRunner:
         settings: str | Path,
         output_dir: Path,
         manifest: Path | None = None,
+        realtime: bool = True,
+        async_export: bool = True,
     ) -> list[str]:
         command = [
             self._container_path(executable),
@@ -363,6 +385,10 @@ class BaseRunner:
         ]
         if manifest is not None:
             command.extend(["--manifest", self._container_path(manifest)])
+        if not realtime:
+            command.append("--no-realtime")
+        if not async_export:
+            command.append("--sync-export")
         return command
 
     def _execute_run(
@@ -577,6 +603,8 @@ class StereoRunner(BaseRunner):
         settings: str | Path,
         output_dir: Path,
         manifest: Path | None = None,
+        realtime: bool = True,
+        async_export: bool = True,
     ) -> list[str]:
         if manifest is None:
             raise ValueError("Stereo runs require frames=... or manifest=... with left and right image paths.")
@@ -586,6 +614,8 @@ class StereoRunner(BaseRunner):
             settings=settings,
             output_dir=output_dir,
             manifest=manifest,
+            realtime=realtime,
+            async_export=async_export,
         )
 
 
@@ -629,6 +659,8 @@ class RGBDRunner(BaseRunner):
         settings: str | Path,
         output_dir: Path,
         manifest: Path | None = None,
+        realtime: bool = True,
+        async_export: bool = True,
     ) -> list[str]:
         command = [
             self._container_path(executable),
@@ -642,4 +674,8 @@ class RGBDRunner(BaseRunner):
         if manifest is None:
             raise ValueError("RGB-D runs require frames=... or manifest=... with depth image paths.")
         command.extend(["--manifest", self._container_path(manifest)])
+        if not realtime:
+            command.append("--no-realtime")
+        if not async_export:
+            command.append("--sync-export")
         return command
