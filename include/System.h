@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include<stdio.h>
 #include<stdlib.h>
+#include<cstddef>
 #include<string>
 #include<thread>
 #include<opencv2/core/core.hpp>
@@ -113,7 +114,7 @@ public:
     // Input image: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
     // Input depthmap: Float (CV_32F).
     // Returns the camera pose (empty if tracking fails).
-    Sophus::SE3f TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp, const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(), string filename="");
+    Sophus::SE3f TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp, const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(), string filename="", string trajectoryId="", long frameIndex=-1);
 
     // Proccess the given monocular frame and optionally imu data
     // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
@@ -145,6 +146,10 @@ public:
     // Call first Shutdown()
     // See format details at: http://vision.in.tum.de/data/datasets/rgbd-dataset
     void SaveTrajectoryTUM(const string &filename);
+    // Scene-atlas export: retain source dataset/frame provenance while using
+    // final loop-closure-corrected poses.  Returns false if the JSONL file
+    // could not be written or the tracking history is inconsistent.
+    bool SaveTrajectoryTUMWithMetadata(const string &filename, std::size_t* exportedFrames = NULL);
 
     // Save keyframe poses in the TUM RGB-D dataset format.
     // This method works for all sensor input.
@@ -183,6 +188,11 @@ public:
     bool isFinished();
 
     void ChangeDataset();
+
+    // Number of live maps after multi-session processing.  The scene helper
+    // uses this to distinguish a genuine Atlas merge from merely processing
+    // several independent maps in one System instance.
+    int AtlasMapCount();
 
     float GetImageScale();
 
