@@ -32,6 +32,52 @@ The Docker image builds the helper binaries once at `/opt/orbslam3/bin/`.
 The Python runner executes those image-baked binaries directly, so parallel or
 repeated mapping runs do not compile helpers into their output directories.
 
+## Mapping Progress
+
+Progress output is optional and configured by the caller. The image writes one
+versioned JSON document per trajectory; callers decide the path, poll it, and
+interpret it for their UI or persistence layer. A standalone run passes
+`--progress-file`, commonly as `/outputs/mapping_progress.json`. In Python,
+pass `progress_file=Path("outputs/mapping_progress.json")` to `run_dataset`,
+`run_sequence`, `build_map`, or `build_map_sequence`.
+
+Every update has this exact schema:
+
+```json
+{
+  "schema_version": 1,
+  "stage": "tracking",
+  "frames_total": 2000,
+  "frames_processed": 437,
+  "updated_at_unix_ms": 1784918400123
+}
+```
+
+The file is written to a temporary file in the same directory and atomically
+renamed into place. Readers therefore see a complete previous or next document,
+never a partial JSON write. Standalone stages are `loading`, `tracking`,
+`exporting`, `completed`, and `failed`.
+
+`scene_atlas_export` uses the same document for every trajectory. Its scene
+manifest has one optional fourth field, `progress_file`; either every row
+supplies it or no row does. For example:
+
+```text
+room0 /datasets/room0 /outputs/room0/frames.txt /outputs/room0/mapping_progress.json
+room1 /datasets/room1 /outputs/room1/frames.txt /outputs/room1/mapping_progress.json
+```
+
+Run it as:
+
+```bash
+/opt/orbslam3/bin/scene_atlas_export VOCAB SETTINGS SCENE_MANIFEST FINAL_POSES_JSONL
+```
+
+Atlas uses the additional stages `atlas_loading`, `atlas_tracking`,
+`atlas_merging`, and `atlas_exporting`, followed by the common `completed` or
+`failed` stage. It does not write an aggregate scene-level progress or status
+file.
+
 ## Install
 
 From this checkout:

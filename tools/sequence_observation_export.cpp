@@ -24,6 +24,8 @@
 #include <MapPoint.h>
 #include <System.h>
 
+#include "mapping_progress.h"
+
 using namespace std;
 
 struct ImageEntry {
@@ -415,7 +417,7 @@ static ORB_SLAM3::System::eSensor orb_sensor(const string& sensor) {
 int main(int argc, char** argv) {
     if (argc < 7) {
         cerr << "usage: sequence_observation_export SENSOR VOCAB SETTINGS DATASET OBSERVATIONS_JSONL MAP_POINTS_CSV [ASSOCIATION]\n";
-        cerr << "       sequence_observation_export SENSOR VOCAB SETTINGS DATASET OBSERVATIONS_JSONL MAP_POINTS_CSV [--manifest MANIFEST] [--no-realtime] [--sync-export]\n";
+        cerr << "       sequence_observation_export SENSOR VOCAB SETTINGS DATASET OBSERVATIONS_JSONL MAP_POINTS_CSV [--manifest MANIFEST] [--no-realtime] [--sync-export] [--progress-file PATH]\n";
         return 2;
     }
 
@@ -429,6 +431,7 @@ int main(int argc, char** argv) {
     string manifest;
     bool realtime = true;
     bool async_export = true;
+    string progress_path;
     for (int arg = 7; arg < argc; ++arg) {
         const string value = argv[arg];
         if (value == "--manifest") {
@@ -441,6 +444,12 @@ int main(int argc, char** argv) {
             realtime = false;
         } else if (value == "--sync-export") {
             async_export = false;
+        } else if (value == "--progress-file") {
+            if (++arg == argc) {
+                cerr << "error: --progress-file requires a path\n";
+                return 2;
+            }
+            progress_path = argv[arg];
         } else if (association.empty()) {
             association = value;
         } else {
@@ -449,6 +458,9 @@ int main(int argc, char** argv) {
         }
     }
 
+    unique_ptr<MappingProgress> progress;
+    size_t progress_total = 0;
+    size_t progress_processed = 0;
     try {
         const bool rgbd = sensor == "rgbd";
         const bool stereo = sensor == "stereo";
@@ -466,6 +478,11 @@ int main(int argc, char** argv) {
         }
         if (entries.empty()) {
             throw runtime_error("no images found");
+        }
+        progress_total = entries.size();
+        if (!progress_path.empty()) {
+            progress.reset(new MappingProgress(progress_path));
+            progress->Write("loading", progress_total, progress_processed);
         }
 
         ORB_SLAM3::System slam(vocabulary, settings, system_sensor, false);
@@ -486,6 +503,10 @@ int main(int argc, char** argv) {
         cout << endl << "-------" << endl;
         cout << "Start processing sequence with observation export ..." << endl;
         cout << "Images in the sequence: " << entries.size() << endl << endl;
+
+        if (progress) {
+            progress->Write("tracking", progress_total, progress_processed);
+        }
 
         for (size_t i = 0; i < entries.size(); ++i) {
             const ImageEntry& entry = entries[i];
@@ -541,6 +562,10 @@ int main(int argc, char** argv) {
             } else {
                 write_observation(observations, observation);
             }
+            ++progress_processed;
+            if (progress) {
+                progress->Write("tracking", progress_total, progress_processed);
+            }
 
             if (realtime) {
                 double wait_time = 0.0;
@@ -555,6 +580,9 @@ int main(int argc, char** argv) {
             }
         }
 
+        if (progress) {
+            progress->Write("exporting", progress_total, progress_processed);
+        }
         if (observation_writer) {
             observation_writer->Close();
         }
@@ -574,8 +602,18 @@ int main(int argc, char** argv) {
 
         cout << "wrote " << entries.size() << " posed observations to " << observations_path << endl;
         cout << "wrote " << map_points.size() << " observed map points to " << map_points_path << endl;
+        if (progress) {
+            progress->Write("completed", progress_total, progress_processed);
+        }
         return 0;
     } catch (const exception& exc) {
+        if (progress) {
+            try {
+                progress->Write("failed", progress_total, progress_processed);
+            } catch (const exception&) {
+                // Preserve the original mapping error when progress reporting also fails.
+            }
+        }
         cerr << "error: " << exc.what() << endl;
         return 1;
     }

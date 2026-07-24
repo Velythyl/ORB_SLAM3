@@ -98,6 +98,50 @@ def test_observation_export_can_run_synchronously(tmp_path: Path) -> None:
     assert command[-1] == "--sync-export"
 
 
+def test_observation_export_accepts_caller_configured_progress_file(tmp_path: Path) -> None:
+    runner = MonocularRunner(settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml", repo_root=tmp_path)
+
+    command = runner._observation_command(
+        executable=OBSERVATION_HELPER,
+        dataset=Path("datasets/sequence"),
+        settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml",
+        output_dir=Path("outputs"),
+        progress_file=Path("outputs/mapping_progress.json"),
+    )
+
+    assert command[-2:] == ["--progress-file", "/work/outputs/mapping_progress.json"]
+
+
+def test_run_dataset_forwards_progress_file(tmp_path: Path, monkeypatch) -> None:
+    runner = MonocularRunner(settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml", repo_root=tmp_path)
+    captured = {}
+
+    def fake_execute_run(**kwargs):
+        captured.update(kwargs)
+        from pyorbslam3 import RunResult
+
+        return RunResult(
+            output_dir=kwargs["output_dir"],
+            keyframe_trajectory=None,
+            camera_trajectory=None,
+            atlas=kwargs["atlas"],
+            observations_path=None,
+            map_points_path=None,
+            log=kwargs["log"],
+            poses=(),
+        )
+
+    monkeypatch.setattr(runner, "_execute_run", fake_execute_run)
+    runner.run_dataset(
+        dataset=Path("datasets/sequence"),
+        output_dir=tmp_path / "outputs",
+        frames=[ImageFrame(0.0, "rgb/000000.png")],
+        progress_file=Path("outputs/mapping_progress.json"),
+    )
+
+    assert captured["command"][-2:] == ["--progress-file", "/work/outputs/mapping_progress.json"]
+
+
 def test_sequence_manifest_is_written_from_frames(tmp_path: Path) -> None:
     runner = MonocularRunner(settings="/opt/orbslam3/Examples/Monocular/TUM1.yaml", repo_root=tmp_path)
 
