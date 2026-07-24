@@ -38,3 +38,12 @@ g++ "${common_flags[@]}" tools/rgbd_keyframes_to_ply.cpp \
     "${opencv_cflags[@]}" \
     "${linker_paths[@]}" \
     "${opencv_libs[@]}" -lpthread
+
+echo "Building scene_atlas_export ..."
+g++ "${common_flags[@]}" tools/scene_atlas_export.cpp \
+    -o "${bin_dir}/scene_atlas_export" \
+    "${includes[@]}" \
+    "${opencv_cflags[@]}" \
+    "${linker_paths[@]}" \
+    -lORB_SLAM3 -lpangolin -lOpenGL -lGLEW \
+    "${opencv_libs[@]}" -lpthread

@@ -38,6 +38,9 @@ RUN chmod +x docker/build-orbslam3 docker/build-helpers docker/orbslam3-entrypoi
     && docker/build-helpers \
     && test -x ${ORB_SLAM3_ROOT}/bin/sequence_observation_export \
     && test -x ${ORB_SLAM3_ROOT}/bin/rgbd_keyframes_to_ply \
+    && test -x ${ORB_SLAM3_ROOT}/bin/scene_atlas_export \
+    && ( ${ORB_SLAM3_ROOT}/bin/scene_atlas_export >/tmp/scene_atlas_export.usage 2>&1; test $? -eq 2 ) \
+    && grep -q '^usage: scene_atlas_export ' /tmp/scene_atlas_export.usage \
     && ldconfig
 
 ENV PATH="${ORB_SLAM3_ROOT}/bin:${ORB_SLAM3_ROOT}/Examples/RGB-D:${ORB_SLAM3_ROOT}/Examples/RGB-D-Inertial:${ORB_SLAM3_ROOT}/Examples/Stereo:${ORB_SLAM3_ROOT}/Examples/Monocular:${ORB_SLAM3_ROOT}/Examples/Monocular-Inertial:${ORB_SLAM3_ROOT}/Examples/Stereo-Inertial:${ORB_SLAM3_ROOT}/Examples/Calibration:${PATH}"

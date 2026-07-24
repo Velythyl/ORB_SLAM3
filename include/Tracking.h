@@ -70,7 +70,7 @@ public:
 
     // Preprocess the input and call Track(). Extract features and performs stereo matching.
     Sophus::SE3f GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const double &timestamp, string filename);
-    Sophus::SE3f GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, string filename);
+    Sophus::SE3f GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, string filename, string trajectoryId="", long frameIndex=-1);
     Sophus::SE3f GrabImageMonocular(const cv::Mat &im, const double &timestamp, string filename);
 
     void GrabImuData(const IMU::Point &imuMeasurement);
@@ -153,6 +153,9 @@ public:
     list<KeyFrame*> mlpReferences;
     list<double> mlFrameTimes;
     list<bool> mlbLost;
+    list<string> mlFrameTrajectoryIds;
+    list<long> mlFrameSourceIndices;
+    list<string> mlFrameSourceNames;
 
     // frames with estimated pose
     int mTrackedFr;
@@ -160,6 +163,11 @@ public:
 
     // True if local mapping is deactivated and we are performing only localization
     bool mbOnlyTracking;
+
+    // Source provenance for mCurrentFrame.  It is copied into the trajectory
+    // history by Track(), together with the final relative frame pose.
+    string mCurrentFrameTrajectoryId;
+    long mCurrentFrameSourceIndex;
 
     void Reset(bool bLocMap = false);
     void ResetActiveMap(bool bLocMap = false);

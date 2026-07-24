@@ -325,7 +325,7 @@ Sophus::SE3f System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, 
     return Tcw;
 }
 
-Sophus::SE3f System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp, const vector<IMU::Point>& vImuMeas, string filename)
+Sophus::SE3f System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp, const vector<IMU::Point>& vImuMeas, string filename, string trajectoryId, long frameIndex)
 {
     if(mSensor!=RGBD  && mSensor!=IMU_RGBD)
     {
@@ -387,7 +387,7 @@ Sophus::SE3f System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const
         for(size_t i_imu = 0; i_imu < vImuMeas.size(); i_imu++)
             mpTracker->GrabImuData(vImuMeas[i_imu]);
 
-    Sophus::SE3f Tcw = mpTracker->GrabImageRGBD(imToFeed,imDepthToFeed,timestamp,filename);
+    Sophus::SE3f Tcw = mpTracker->GrabImageRGBD(imToFeed,imDepthToFeed,timestamp,filename,trajectoryId,frameIndex);
 
     unique_lock<mutex> lock2(mMutexState);
     mTrackingState = mpTracker->mState;
@@ -624,6 +624,104 @@ void System::SaveTrajectoryTUM(const string &filename)
     }
     f.close();
     // cout << endl << "trajectory saved!" << endl;
+}
+
+namespace
+{
+string JsonEscape(const string& value)
+{
+    ostringstream escaped;
+    for(const unsigned char ch : value)
+    {
+        switch(ch)
+        {
+        case '\\': escaped << "\\\\"; break;
+        case '"': escaped << "\\\""; break;
+        case '\b': escaped << "\\b"; break;
+        case '\f': escaped << "\\f"; break;
+        case '\n': escaped << "\\n"; break;
+        case '\r': escaped << "\\r"; break;
+        case '\t': escaped << "\\t"; break;
+        default:
+            if(ch < 0x20)
+                escaped << "\\u" << hex << setw(4) << setfill('0') << static_cast<int>(ch) << dec << setfill(' ');
+            else
+                escaped << static_cast<char>(ch);
+        }
+    }
+    return escaped.str();
+}
+}
+
+bool System::SaveTrajectoryTUMWithMetadata(const string &filename, std::size_t* exportedFrames)
+{
+    if(exportedFrames)
+        *exportedFrames = 0;
+    if(mSensor==MONOCULAR)
+    {
+        cerr << "ERROR: SaveTrajectoryTUMWithMetadata cannot be used for monocular." << endl;
+        return false;
+    }
+
+    const size_t historySize = mpTracker->mlRelativeFramePoses.size();
+    if(mpTracker->mlpReferences.size() != historySize || mpTracker->mlFrameTimes.size() != historySize ||
+       mpTracker->mlbLost.size() != historySize || mpTracker->mlFrameTrajectoryIds.size() != historySize ||
+       mpTracker->mlFrameSourceIndices.size() != historySize || mpTracker->mlFrameSourceNames.size() != historySize)
+    {
+        cerr << "ERROR: scene-atlas frame provenance history is inconsistent." << endl;
+        return false;
+    }
+
+    ofstream f(filename.c_str());
+    if(!f)
+    {
+        cerr << "ERROR: cannot open scene-atlas pose output " << filename << endl;
+        return false;
+    }
+
+    auto lRit = mpTracker->mlpReferences.begin();
+    auto lT = mpTracker->mlFrameTimes.begin();
+    auto lbL = mpTracker->mlbLost.begin();
+    auto lTrajectory = mpTracker->mlFrameTrajectoryIds.begin();
+    auto lFrameIndex = mpTracker->mlFrameSourceIndices.begin();
+    auto lName = mpTracker->mlFrameSourceNames.begin();
+    size_t count = 0;
+    for(auto lit=mpTracker->mlRelativeFramePoses.begin(), lend=mpTracker->mlRelativeFramePoses.end();
+        lit!=lend; ++lit, ++lRit, ++lT, ++lbL, ++lTrajectory, ++lFrameIndex, ++lName)
+    {
+        if(*lbL || !*lRit) continue;
+        KeyFrame* pKF = *lRit;
+        Sophus::SE3f Trw;
+        while(pKF && pKF->isBad()) { Trw = Trw * pKF->mTcp; pKF = pKF->GetParent(); }
+        if(!pKF) continue;
+        Map* pMap = pKF->GetMap();
+        if(!pMap) continue;
+
+        // Do not rebase against the current map's first keyframe.  That would
+        // silently put independent maps into a purported common frame.  These
+        // poses use the final optimized coordinate system of their Atlas map.
+        Sophus::SE3f Twc = ((*lit) * Trw * pKF->GetPose()).inverse();
+        Eigen::Quaternionf q = Twc.unit_quaternion();
+        Eigen::Vector3f t = Twc.translation();
+        f << fixed << setprecision(9)
+          << "{\"trajectory_id\":\"" << JsonEscape(*lTrajectory)
+          << "\",\"frame_index\":" << *lFrameIndex
+          << ",\"frame_name\":\"" << JsonEscape(*lName)
+          << "\",\"timestamp\":" << *lT
+          << ",\"atlas_map_id\":" << pMap->GetId()
+          << ",\"pose\":{\"tx\":" << t(0) << ",\"ty\":" << t(1) << ",\"tz\":" << t(2)
+          << ",\"qx\":" << q.x() << ",\"qy\":" << q.y() << ",\"qz\":" << q.z() << ",\"qw\":" << q.w() << "}}\n";
+        ++count;
+    }
+    f.close();
+    if(!f)
+    {
+        cerr << "ERROR: failed while writing scene-atlas pose output " << filename << endl;
+        return false;
+    }
+    if(exportedFrames)
+        *exportedFrames = count;
+    return true;
 }
 
 void System::SaveKeyFrameTrajectoryTUM(const string &filename)
@@ -1378,6 +1476,11 @@ void System::ChangeDataset()
     mpTracker->NewDataset();
 }
 
+int System::AtlasMapCount()
+{
+    return mpAtlas ? mpAtlas->CountMaps() : 0;
+}
+
 float System::GetImageScale()
 {
     return mpTracker->GetImageScale();
@@ -1546,4 +1649,3 @@ string System::CalculateCheckSum(string filename, int type)
 }
 
 } //namespace ORB_SLAM
-
