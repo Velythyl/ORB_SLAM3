@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Prints the -march target for image builds: ORB_SLAM3_MARCH if set, else a
+# portable baseline for the build architecture.
+set -euo pipefail
+if [ -n "${ORB_SLAM3_MARCH:-}" ]; then
+    echo "${ORB_SLAM3_MARCH}"
+    exit 0
+fi
+case "$(uname -m)" in
+    x86_64) echo "x86-64-v3" ;;
+    aarch64|arm64) echo "armv8-a" ;;
+    *) echo "native" ;;
+esac
