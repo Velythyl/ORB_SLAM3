@@ -3,6 +3,8 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ORB_SLAM3_ROOT=/opt/orbslam3
 ARG BUILD_JOBS=2
+# Optional -march override; empty selects x86-64-v3 / armv8-a (docker/orbslam3-march).
+ARG ORB_SLAM3_MARCH=
 ENV CMAKE_BUILD_PARALLEL_LEVEL=${BUILD_JOBS}
 
 RUN apt-get update \
@@ -33,7 +35,7 @@ RUN git clone --depth 1 --branch v0.6 https://github.com/stevenlovegrove/Pangoli
 COPY . ${ORB_SLAM3_ROOT}
 WORKDIR ${ORB_SLAM3_ROOT}
 
-RUN chmod +x docker/build-orbslam3 docker/build-helpers docker/orbslam3-entrypoint \
+RUN chmod +x docker/build-orbslam3 docker/build-helpers docker/orbslam3-entrypoint docker/orbslam3-march \
     && docker/build-orbslam3 \
     && docker/build-helpers \
     && test -x ${ORB_SLAM3_ROOT}/bin/sequence_observation_export \
@@ -41,6 +43,9 @@ RUN chmod +x docker/build-orbslam3 docker/build-helpers docker/orbslam3-entrypoi
     && test -x ${ORB_SLAM3_ROOT}/bin/scene_atlas_export \
     && ( ${ORB_SLAM3_ROOT}/bin/scene_atlas_export >/tmp/scene_atlas_export.usage 2>&1; test $? -eq 2 ) \
     && grep -q '^usage: scene_atlas_export ' /tmp/scene_atlas_export.usage \
+    && { [ -n "${ORB_SLAM3_MARCH}" ] || [ "$(uname -m)" != x86_64 ] \
+         || ! objdump -d ${ORB_SLAM3_ROOT}/lib/libORB_SLAM3.so ${ORB_SLAM3_ROOT}/Thirdparty/g2o/lib/libg2o.so | grep -q zmm \
+         || { echo "AVX-512 instructions in an x86-64-v3 build" >&2; exit 1; }; } \
     && ldconfig
 
 ENV PATH="${ORB_SLAM3_ROOT}/bin:${ORB_SLAM3_ROOT}/Examples/RGB-D:${ORB_SLAM3_ROOT}/Examples/RGB-D-Inertial:${ORB_SLAM3_ROOT}/Examples/Stereo:${ORB_SLAM3_ROOT}/Examples/Monocular:${ORB_SLAM3_ROOT}/Examples/Monocular-Inertial:${ORB_SLAM3_ROOT}/Examples/Stereo-Inertial:${ORB_SLAM3_ROOT}/Examples/Calibration:${PATH}"

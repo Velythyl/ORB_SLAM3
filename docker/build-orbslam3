@@ -2,18 +2,22 @@
 set -euo pipefail
 
 jobs="${BUILD_JOBS:-${CMAKE_BUILD_PARALLEL_LEVEL:-2}}"
+# -march=native would target the CI runner's CPU (an AVX-512 runner yields an
+# image that dies with SIGILL on AVX2-only cluster nodes); pin a portable target.
+march="$(docker/orbslam3-march)"
+echo "Building with -march=${march}"
 
 echo "Configuring and building Thirdparty/DBoW2 ..."
-cmake -S Thirdparty/DBoW2 -B Thirdparty/DBoW2/build -DCMAKE_BUILD_TYPE=Release
+cmake -S Thirdparty/DBoW2 -B Thirdparty/DBoW2/build -DCMAKE_BUILD_TYPE=Release -DORB_SLAM3_MARCH="${march}"
 cmake --build Thirdparty/DBoW2/build --parallel "${jobs}"
 
 echo "Configuring and building Thirdparty/g2o ..."
-cmake -S Thirdparty/g2o -B Thirdparty/g2o/build -DCMAKE_BUILD_TYPE=Release
+cmake -S Thirdparty/g2o -B Thirdparty/g2o/build -DCMAKE_BUILD_TYPE=Release -DORB_SLAM3_MARCH="${march}"
 cmake --build Thirdparty/g2o/build --parallel "${jobs}"
 
 echo "Uncompress vocabulary ..."
 tar -xf Vocabulary/ORBvoc.txt.tar.gz -C Vocabulary
 
 echo "Configuring and building ORB_SLAM3 ..."
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_OLD_EXAMPLES=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_OLD_EXAMPLES=OFF -DORB_SLAM3_MARCH="${march}"
 cmake --build build --parallel "${jobs}"
