@@ -16,7 +16,7 @@ linker_paths=(
     "-Wl,-rpath,${root}/lib"
     "-Wl,-rpath,/usr/local/lib"
 )
-common_flags=(-std=c++11 -O3 -DCOMPILEDWITHC11)
+common_flags=(-std=c++11 -O3 "-march=$(docker/orbslam3-march)" -DCOMPILEDWITHC11)
 read -r -a opencv_cflags <<< "$(pkg-config --cflags opencv4)"
 read -r -a opencv_libs <<< "$(pkg-config --libs opencv4)"
 
