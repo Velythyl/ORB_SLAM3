@@ -1555,6 +1555,19 @@ Sophus::SE3f Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, co
     mCurrentFrameTrajectoryId = trajectoryId;
     mCurrentFrameSourceIndex = frameIndex;
 
+    if(mbUseOdometry && mSensor == System::RGBD)
+    {
+        mCurrentFrame.mbHasOdom = mbPendingOdom;
+        if(mbPendingOdom)
+        {
+            mCurrentFrame.mToc = mPendingTob * OdometryModel::Tbc();
+            mnOdomFrames++;
+        }
+        mbPendingOdom = false;
+        if(OdometryModel::Params().staticMask)
+            UpdateEgoStaticMask();
+    }
+
 #ifdef REGISTER_TIMES
     vdORBExtract_ms.push_back(mCurrentFrame.mTimeORB_Ext);
 #endif
@@ -1926,6 +1939,9 @@ void Tracking::Track()
     {
         // System is initialized. Track Frame.
         bool bOK;
+        bool bOdomTracked = false;
+        mbOdomPrediction = false;
+        mbOdomDeadReckoned = false;
 
 #ifdef REGISTER_TIMES
         std::chrono::steady_clock::time_point time_StartPosePred = std::chrono::steady_clock::now();
@@ -1938,7 +1954,14 @@ void Tracking::Track()
             // State OK
             // Local Mapping is activated. This is the normal behaviour, unless
             // you explicitly activate the "only tracking" mode.
-            if(mState==OK)
+            if(mbUseOdometry && (mState==OK || mState==RECENTLY_LOST) && OdometryPredict())
+            {
+                // Odometry-aided tracking: motion prior, re-tracking and
+                // dead-reckoning instead of losing the map.
+                bOK = TrackWithOdometry();
+                bOdomTracked = true;
+            }
+            else if(mState==OK)
             {
 
                 // Local Mapping might have changed some MapPoints tracked in last frame
@@ -2124,7 +2147,8 @@ void Tracking::Track()
         // If we have an initial estimation of the camera pose and matching. Track the local map.
         if(!mbOnlyTracking)
         {
-            if(bOK)
+            // The odometry path already tracked the local map.
+            if(bOK && !bOdomTracked)
             {
                 bOK = TrackLocalMap();
 
@@ -2250,6 +2274,13 @@ void Tracking::Track()
             if(bNeedKF && (bOK || (mInsertKFsLost && mState==RECENTLY_LOST &&
                                    (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))))
                 CreateNewKeyFrame();
+            else if(mbOdomDeadReckoned && NeedOdometryKeyFrame())
+            {
+                // Keep mapping on the odometry pose so that tracking can
+                // resume in this map instead of starting a new one.
+                CreateNewKeyFrame();
+                mnOdomLostKFs++;
+            }
 
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_EndNewKF = std::chrono::steady_clock::now();
@@ -2292,6 +2323,12 @@ void Tracking::Track()
 
         if(!mCurrentFrame.mpReferenceKF)
             mCurrentFrame.mpReferenceKF = mpReferenceKF;
+
+        if(mbUseOdometry && bOK && mCurrentFrame.mbHasOdom && mCurrentFrame.isSet())
+        {
+            mTwoAnchor = mCurrentFrame.GetPose().inverse() * mCurrentFrame.mToc.inverse();
+            mbOdomAnchor = true;
+        }
 
         mLastFrame = Frame(mCurrentFrame);
     }
@@ -2344,6 +2381,19 @@ void Tracking::Track()
 
 void Tracking::StereoInitialization()
 {
+    if(mbUseOdometry)
+    {
+        // A map started on a frame without depth has no points and is lost
+        // at once; with odometry, wait for depth (and for odometry once an
+        // anchor exists, so that the new map shares the previous map's frame).
+        int nDepth = 0;
+        for(int i=0; i<mCurrentFrame.N; i++)
+            if(mCurrentFrame.mvDepth[i]>0)
+                nDepth++;
+        if(nDepth<100 || (mbOdomAnchor && !mCurrentFrame.mbHasOdom))
+            return;
+    }
+
     if(mCurrentFrame.N>500)
     {
         if (mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
@@ -2376,11 +2426,26 @@ void Tracking::StereoInitialization()
             Vwb0.setZero();
             mCurrentFrame.SetImuPoseVelocity(Rwb0, twb0, Vwb0);
         }
+        else if(mbUseOdometry && mbOdomAnchor && mCurrentFrame.mbHasOdom)
+        {
+            // Anchor the new map to the previous one through the odometry.
+            mCurrentFrame.SetPose((mTwoAnchor * mCurrentFrame.mToc).inverse());
+            mnOdomAnchoredInits++;
+            cout << "ODOM: new map anchored to the previous map frame by odometry" << endl;
+        }
         else
             mCurrentFrame.SetPose(Sophus::SE3f());
 
+        if(mbUseOdometry && mCurrentFrame.mbHasOdom)
+        {
+            mTwoAnchor = mCurrentFrame.GetPose().inverse() * mCurrentFrame.mToc.inverse();
+            mbOdomAnchor = true;
+        }
+
         // Create KeyFrame
         KeyFrame* pKFini = new KeyFrame(mCurrentFrame,mpAtlas->GetCurrentMap(),mpKeyFrameDB);
+        if(mbUseOdometry)
+            mpLastOdomKF = pKFini->mbHasOdom ? pKFini : static_cast<KeyFrame*>(NULL);
 
         // Insert KeyFrame in the map
         mpAtlas->AddKeyFrame(pKFini);
@@ -2702,6 +2767,8 @@ void Tracking::CreateMapInAtlas()
     if(mpReferenceKF)
         mpReferenceKF = static_cast<KeyFrame*>(NULL);
 
+    mpLastOdomKF = static_cast<KeyFrame*>(NULL);
+
     mLastFrame = Frame();
     mCurrentFrame = Frame();
     mvIniMatches.clear();
@@ -2746,7 +2813,10 @@ bool Tracking::TrackReferenceKeyFrame()
     }
 
     mCurrentFrame.mvpMapPoints = vpMapPointMatches;
-    mCurrentFrame.SetPose(mLastFrame.GetPose());
+    if(mbOdomPrediction)
+        mCurrentFrame.SetPose(mTcwOdomPred);
+    else
+        mCurrentFrame.SetPose(mLastFrame.GetPose());
 
     //mCurrentFrame.PrintPointDistribution();
 
@@ -2874,6 +2944,11 @@ bool Tracking::TrackWithMotionModel()
         // Predict state with IMU if it is initialized and it doesnt need reset
         PredictStateIMU();
         return true;
+    }
+    else if(mbOdomPrediction)
+    {
+        // Odometry increment instead of the constant-velocity model.
+        mCurrentFrame.SetPose(mTcwOdomPred);
     }
     else
     {
@@ -3248,6 +3323,13 @@ void Tracking::CreateNewKeyFrame()
     else
         Verbose::PrintMess("No last KF in KF creation!!", Verbose::VERBOSITY_NORMAL);
 
+    if(mbUseOdometry && pKF->mbHasOdom)
+    {
+        if(mpLastOdomKF)
+            pKF->LinkOdomAfter(mpLastOdomKF);
+        mpLastOdomKF = pKF;
+    }
+
     // Reset preintegration from last KF (Create new object)
     if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
     {
@@ -3513,6 +3595,19 @@ void Tracking::UpdateLocalKeyFrames()
         }
     }
 
+
+    if(keyframeCounter.empty() && mbUseOdometry && mbOdomPrediction)
+    {
+        // Re-tracking from the odometry prediction without any match: seed
+        // the local map with the latest keyframes of the odometry chain.
+        Map* pCurrentMap = mpAtlas->GetCurrentMap();
+        KeyFrame* pKF = mpLastOdomKF ? mpLastOdomKF : mpLastKeyFrame;
+        for(int n=0; pKF && n<5; n++, pKF = pKF->GetOdomPrevKF())
+            if(!pKF->isBad() && pKF->GetMap()==pCurrentMap)
+                keyframeCounter[pKF] += 5-n;
+        if(mpReferenceKF && !mpReferenceKF->isBad() && mpReferenceKF->GetMap()==pCurrentMap)
+            keyframeCounter[mpReferenceKF]++;
+    }
 
     int max=0;
     KeyFrame* pKFmax= static_cast<KeyFrame*>(NULL);
@@ -3818,6 +3913,8 @@ void Tracking::Reset(bool bLocMap)
 
     // Clear Map (this erase MapPoints and KeyFrames)
     mpAtlas->clearAtlas();
+    mpLastOdomKF = static_cast<KeyFrame*>(NULL);
+    mbOdomAnchor = false;
     mpAtlas->CreateNewMap();
     if (mSensor==System::IMU_STEREO || mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_RGBD)
         mpAtlas->SetInertialSensor();
@@ -3881,6 +3978,7 @@ void Tracking::ResetActiveMap(bool bLocMap)
 
     // Clear Map (this erase MapPoints and KeyFrames)
     mpAtlas->clearMap();
+    mpLastOdomKF = static_cast<KeyFrame*>(NULL);
 
 
     //KeyFrame::nNextId = mpAtlas->GetLastInitKFid();
@@ -4135,5 +4233,338 @@ void Tracking::Release()
     mbStopRequested = false;
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// Wheel odometry
+// ---------------------------------------------------------------------------
+
+void Tracking::EnableOdometry()
+{
+    mbUseOdometry = true;
+    const OdometryParams &p = OdometryModel::Params();
+    cout << "ODOM: wheel odometry enabled (trans sigma " << p.transSigma << "/m, rot sigma "
+         << p.rotSigma << "/rad, ego-static mask " << (p.staticMask ? "on" : "off") << ")" << endl;
+    cout << "ODOM: T_base_camera =" << endl << OdometryModel::Tbc().matrix() << endl;
+}
+
+void Tracking::SetFrameOdometry(bool valid, const Sophus::SE3f &Tob)
+{
+    mbPendingOdom = valid;
+    if(valid)
+        mPendingTob = Tob;
+}
+
+void Tracking::PrintOdometryStats()
+{
+    if(!mbUseOdometry)
+        return;
+    cout << "ODOM stats: frames_with_odometry=" << mnOdomFrames
+         << " dead_reckoned_frames=" << mnOdomDeadReckoned
+         << " loss_events=" << mnOdomLossEvents
+         << " recoveries=" << mnOdomRecoveries
+         << " retracked_from_prediction=" << mnOdomRetracked
+         << " reloc_accepted=" << mnOdomRelocAccepted
+         << " reloc_rejected=" << mnOdomRelocRejected
+         << " keyframes_while_lost=" << mnOdomLostKFs
+         << " anchored_map_inits=" << mnOdomAnchoredInits
+         << " ego_static_cells=" << mnOdomStaticMasked
+         << " masked_features=" << mnOdomMaskedFeatures << endl;
+}
+
+bool Tracking::OdometryPredict()
+{
+    mbOdomPrediction = false;
+    if(!mCurrentFrame.mbHasOdom || !mLastFrame.mbHasOdom || !mLastFrame.mpReferenceKF || mlRelativeFramePoses.empty())
+        return false;
+
+    // Last frame pose according to its (possibly optimised) reference keyframe.
+    UpdateLastFrame();
+    if(!mLastFrame.isSet())
+        return false;
+
+    // Camera increment T_clast_ccur = T_bc^-1 * dT_base * T_bc.
+    const Sophus::SE3f delta = mLastFrame.mToc.inverse() * mCurrentFrame.mToc;
+    mTcwOdomPred = delta.inverse() * mLastFrame.GetPose();
+    mCurrentFrame.mbOdomPrior = true;
+    mCurrentFrame.mTcwOdomPrior = mTcwOdomPred;
+    mCurrentFrame.mOdomPriorDelta = delta;
+    mbOdomPrediction = true;
+    return true;
+}
+
+void Tracking::ResetToOdometryPrediction()
+{
+    mCurrentFrame.SetPose(mTcwOdomPred);
+    fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint*>(NULL));
+    fill(mCurrentFrame.mvbOutlier.begin(), mCurrentFrame.mvbOutlier.end(), false);
+    mCurrentFrame.mbOdomPrior = true;
+    mCurrentFrame.mTcwOdomPrior = mTcwOdomPred;
+}
+
+bool Tracking::OdometryGatedRelocalization()
+{
+    const unsigned int nPrevReloc = mnLastRelocFrameId;
+    // Relocalisation is an independent hypothesis: no prior while solving it.
+    mCurrentFrame.mbOdomPrior = false;
+    if(!Relocalization())
+    {
+        ResetToOdometryPrediction();
+        return false;
+    }
+
+    // Accept it only if it agrees with the dead-reckoned pose, with a gate
+    // that grows with the distance driven since tracking was lost.
+    const Sophus::SE3f Tdiff = mCurrentFrame.GetPose() * mTcwOdomPred.inverse();
+    const float dist = (mCurrentFrame.GetPose().inverse().translation() - mTcwOdomPred.inverse().translation()).norm();
+    const float angle = Tdiff.so3().log().norm();
+    const float gateT = 1.0f + 0.1f * mOdomLostDistance;
+    const float gateR = 0.35f + 0.02f * mOdomLostDistance;
+    if(dist > gateT || angle > gateR)
+    {
+        cout << "ODOM: relocalisation rejected (" << dist << " m, " << angle * 180.0 / M_PI
+             << " deg from the odometry prediction)" << endl;
+        mnLastRelocFrameId = nPrevReloc;
+        mnOdomRelocRejected++;
+        ResetToOdometryPrediction();
+        return false;
+    }
+    mnOdomRelocAccepted++;
+    return true;
+}
+
+bool Tracking::TrackWithOdometry()
+{
+    const bool bWasLost = (mState==RECENTLY_LOST);
+
+    // Local Mapping might have changed some MapPoints tracked in last frame
+    CheckReplacedInLastFrame();
+
+    // 1. Frame-to-frame and frame-to-reference-keyframe tracking, both seeded
+    //    with the odometry prediction (and held by the odometry prior).
+    bool bOK = TrackWithMotionModel();
+    if(!bOK && mpReferenceKF)
+        bOK = TrackReferenceKeyFrame();
+
+    // 2. When lost, relocalise against the map, gated by the odometry.
+    bool bReloc = false;
+    if(!bOK && bWasLost)
+    {
+        bOK = OdometryGatedRelocalization();
+        bReloc = bOK;
+    }
+
+    if(bOK)
+        bOK = TrackLocalMap();
+
+    // 3. Re-track the local map directly from the predicted pose.
+    if(!bOK)
+    {
+        ResetToOdometryPrediction();
+        if(TrackLocalMap())
+        {
+            bOK = true;
+            mnOdomRetracked++;
+        }
+    }
+
+    const float step = (mLastFrame.mToc.inverse() * mCurrentFrame.mToc).translation().norm();
+    if(!bOK)
+    {
+        // 4. Dead-reckon on the odometry. The state becomes RECENTLY_LOST but
+        //    never LOST while the odometry keeps coming, so the map is kept.
+        ResetToOdometryPrediction();
+        mbOdomDeadReckoned = true;
+        mnOdomDeadReckoned++;
+        if(!bWasLost)
+        {
+            mnOdomLossEvents++;
+            mOdomLostSince = mCurrentFrame.mTimeStamp;
+            mOdomLostDistance = 0.0;
+            cout << "ODOM: visual tracking lost at frame " << mCurrentFrame.mnId << " (t=" << to_string(mCurrentFrame.mTimeStamp)
+                 << "), dead-reckoning on odometry" << endl;
+        }
+        else
+            mOdomLostDistance += step;
+        mTimeStampLost = mCurrentFrame.mTimeStamp;
+    }
+    else if(bWasLost)
+    {
+        mnOdomRecoveries++;
+        cout << "ODOM: visual tracking recovered at frame " << mCurrentFrame.mnId << " after "
+             << mCurrentFrame.mTimeStamp - mOdomLostSince << " s and " << mOdomLostDistance << " m"
+             << (bReloc ? " (relocalisation)" : "") << endl;
+    }
+    return bOK;
+}
+
+bool Tracking::NeedOdometryKeyFrame()
+{
+    if(!mCurrentFrame.mbHasOdom || mbOnlyTracking)
+        return false;
+    if(mpLocalMapper->isStopped() || mpLocalMapper->stopRequested() || mpLocalMapper->KeyframesInQueue()>=3)
+        return false;
+
+    int nClose = 0;
+    for(int i=0; i<mCurrentFrame.N; i++)
+        if(mCurrentFrame.mvDepth[i]>0 && mCurrentFrame.mvDepth[i]<mThDepth)
+            nClose++;
+    if(nClose<50)
+        return false;
+
+    if(!mpLastKeyFrame)
+        return true;
+    if(mCurrentFrame.mTimeStamp - mpLastKeyFrame->mTimeStamp >= 0.5)
+        return true;
+    if(mpLastKeyFrame->mbHasOdom)
+    {
+        const Sophus::SE3f d = mpLastKeyFrame->mToc.inverse() * mCurrentFrame.mToc;
+        if(d.translation().norm() >= 0.25f || d.so3().log().norm() >= 0.17f)
+            return true;
+    }
+    return false;
+}
+
+void Tracking::UpdateEgoStaticMask()
+{
+    // Features attached to the robot (gripper, cables) stay at the same pixel
+    // and depth while the odometry says the camera moved. Cells where that is
+    // observed repeatedly are masked for the rest of the sequence (the camera
+    // mount and the arm are assumed fixed).
+    Frame &F = mCurrentFrame;
+    const int cell = 16;
+    const int thScore = 3;
+    if(mvOdomStaticScore.empty())
+    {
+        mnOdomStaticCols = (mImGray.cols + cell - 1) / cell;
+        mnOdomStaticRows = (mImGray.rows + cell - 1) / cell;
+        mvOdomStaticScore.assign(mnOdomStaticCols * mnOdomStaticRows, 0);
+    }
+    const int cols = mnOdomStaticCols;
+    const int rows = mnOdomStaticRows;
+    auto cellXY = [&](const cv::KeyPoint &kp, int &cx, int &cy) {
+        cx = std::min(std::max(int(kp.pt.x) / cell, 0), cols - 1);
+        cy = std::min(std::max(int(kp.pt.y) / cell, 0), rows - 1);
+    };
+
+    if(F.mbHasOdom && F.N>0)
+    {
+        const OdomStaticRef *pRef = NULL;
+        for(auto it = mOdomStaticHistory.rbegin(); it != mOdomStaticHistory.rend(); ++it)
+        {
+            if(F.mTimeStamp - it->t > 5.0)
+                break;
+            const Sophus::SE3f d = it->Toc.inverse() * F.mToc;
+            if(d.translation().norm() >= 0.3f || d.so3().log().norm() >= 0.17f)
+            {
+                pRef = &(*it);
+                break;
+            }
+        }
+
+        if(pRef)
+        {
+            const int b = 8;
+            const int bcols = (mImGray.cols + b - 1) / b;
+            const int brows = (mImGray.rows + b - 1) / b;
+            vector<vector<int> > buckets(bcols * brows);
+            for(size_t j=0; j<pRef->keys.size(); j++)
+            {
+                if(pRef->depth[j] <= 0)
+                    continue;
+                const int bx = std::min(std::max(int(pRef->keys[j].pt.x) / b, 0), bcols - 1);
+                const int by = std::min(std::max(int(pRef->keys[j].pt.y) / b, 0), brows - 1);
+                buckets[by * bcols + bx].push_back(j);
+            }
+
+            vector<bool> vbHit(cols * rows, false);
+            for(int i=0; i<F.N; i++)
+            {
+                const float z = F.mvDepth[i];
+                if(z <= 0 || z > 2.0f)
+                    continue;
+                const cv::KeyPoint &kp = F.mvKeys[i];
+                const int bx = std::min(std::max(int(kp.pt.x) / b, 0), bcols - 1);
+                const int by = std::min(std::max(int(kp.pt.y) / b, 0), brows - 1);
+                int best = 256;
+                for(int dy=-1; dy<=1; dy++)
+                    for(int dx=-1; dx<=1; dx++)
+                    {
+                        const int x = bx + dx, y = by + dy;
+                        if(x < 0 || y < 0 || x >= bcols || y >= brows)
+                            continue;
+                        for(int j : buckets[y * bcols + x])
+                        {
+                            const cv::KeyPoint &kr = pRef->keys[j];
+                            if(fabs(kr.pt.x - kp.pt.x) > 3.0f || fabs(kr.pt.y - kp.pt.y) > 3.0f)
+                                continue;
+                            if(fabs(pRef->depth[j] - z) > 0.02f + 0.02f * z)
+                                continue;
+                            best = std::min(best, ORBmatcher::DescriptorDistance(F.mDescriptors.row(i), pRef->descriptors.row(j)));
+                        }
+                    }
+                if(best <= 40)
+                {
+                    int cx, cy;
+                    cellXY(kp, cx, cy);
+                    vbHit[cy * cols + cx] = true;
+                }
+            }
+
+            int nNew = 0;
+            for(size_t c=0; c<vbHit.size(); c++)
+                if(vbHit[c] && ++mvOdomStaticScore[c] == thScore)
+                    nNew++;
+            if(nNew > 0)
+            {
+                mnOdomStaticMasked += nNew;
+                cout << "ODOM: ego-static mask now covers " << mnOdomStaticMasked << " of " << cols * rows
+                     << " cells (frame " << F.mnId << ")" << endl;
+            }
+        }
+
+        if(mOdomStaticHistory.empty() || F.mTimeStamp - mOdomStaticHistory.back().t >= 0.1)
+        {
+            OdomStaticRef ref;
+            ref.t = F.mTimeStamp;
+            ref.Toc = F.mToc;
+            ref.keys = F.mvKeys;
+            ref.descriptors = F.mDescriptors.clone();
+            ref.depth = F.mvDepth;
+            mOdomStaticHistory.push_back(ref);
+        }
+        while(!mOdomStaticHistory.empty() && F.mTimeStamp - mOdomStaticHistory.front().t > 6.0)
+            mOdomStaticHistory.pop_front();
+    }
+
+    if(mnOdomStaticMasked > 0 && F.N > 0)
+    {
+        // Drop features in masked cells and their 8-neighbourhood.
+        vector<bool> vbKeep(F.N, true);
+        int nDropped = 0;
+        for(int i=0; i<F.N; i++)
+        {
+            int cx, cy;
+            cellXY(F.mvKeys[i], cx, cy);
+            bool bMasked = false;
+            for(int dy=-1; dy<=1 && !bMasked; dy++)
+                for(int dx=-1; dx<=1 && !bMasked; dx++)
+                {
+                    const int x = cx + dx, y = cy + dy;
+                    if(x >= 0 && y >= 0 && x < cols && y < rows && mvOdomStaticScore[y * cols + x] >= thScore)
+                        bMasked = true;
+                }
+            if(bMasked)
+            {
+                vbKeep[i] = false;
+                nDropped++;
+            }
+        }
+        if(nDropped > 0)
+        {
+            F.DiscardFeatures(vbKeep);
+            mnOdomMaskedFeatures += nDropped;
+        }
+    }
+}
 
 } //namespace ORB_SLAM

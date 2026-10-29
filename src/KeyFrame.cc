@@ -79,6 +79,9 @@ KeyFrame::KeyFrame(Frame &F, Map *pMap, KeyFrameDatabase *pKFDB):
 
 
 
+    mbHasOdom = F.mbHasOdom;
+    mToc = F.mToc;
+
     if(!F.HasVelocity()) {
         mVw.setZero();
         mbHasVelocity = false;
@@ -673,9 +676,47 @@ void KeyFrame::SetBadFlag()
         mbBad = true;
     }
 
+    {
+        // Keep the odometry chain connected across the culled keyframe.
+        unique_lock<mutex> lockOdom(mMutexOdomChain);
+        if(mpOdomPrevKF)
+            mpOdomPrevKF->mpOdomNextKF = mpOdomNextKF;
+        if(mpOdomNextKF)
+            mpOdomNextKF->mpOdomPrevKF = mpOdomPrevKF;
+        // mpOdomPrevKF is kept so that LinkOdomAfter can walk past this keyframe.
+        mpOdomNextKF = nullptr;
+    }
+
 
     mpMap->EraseKeyFrame(this);
     mpKeyFrameDB->erase(this);
+}
+
+std::mutex KeyFrame::mMutexOdomChain;
+
+KeyFrame* KeyFrame::GetOdomPrevKF()
+{
+    unique_lock<mutex> lock(mMutexOdomChain);
+    return mpOdomPrevKF;
+}
+
+KeyFrame* KeyFrame::GetOdomNextKF()
+{
+    unique_lock<mutex> lock(mMutexOdomChain);
+    return mpOdomNextKF;
+}
+
+void KeyFrame::LinkOdomAfter(KeyFrame* pPrevKF)
+{
+    unique_lock<mutex> lock(mMutexOdomChain);
+    // Walk past keyframes culled since they were linked.
+    int guard = 0;
+    while(pPrevKF && pPrevKF->mbBad && guard++ < 1000)
+        pPrevKF = pPrevKF->mpOdomPrevKF;
+    if(!pPrevKF || pPrevKF == this || pPrevKF->GetMap() != mpMap)
+        return;
+    mpOdomPrevKF = pPrevKF;
+    pPrevKF->mpOdomNextKF = this;
 }
 
 bool KeyFrame::isBad()

@@ -40,6 +40,7 @@
 #include "Viewer.h"
 #include "ImuTypes.h"
 #include "Settings.h"
+#include "OdometryModel.h"
 
 
 namespace ORB_SLAM3
@@ -115,6 +116,16 @@ public:
     // Input depthmap: Float (CV_32F).
     // Returns the camera pose (empty if tracking fails).
     Sophus::SE3f TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp, const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(), string filename="", string trajectoryId="", long frameIndex=-1);
+
+    // Wheel odometry (RGB-D only). EnableOdometry must be called once, before
+    // the first frame; T_bc takes points from the camera optical frame to the
+    // robot base frame. SetFrameOdometry gives the base pose in the odometry
+    // frame for the next TrackRGBD call (valid=false for a frame without one).
+    // Without EnableOdometry nothing changes.
+    void EnableOdometry(const Sophus::SE3f &Tbc, const OdometryParams &params);
+    void SetFrameOdometry(bool valid, const Sophus::SE3f &Tob);
+    // Odometry usage counters, printed by PrintOdometryStats.
+    void PrintOdometryStats();
 
     // Proccess the given monocular frame and optionally imu data
     // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.

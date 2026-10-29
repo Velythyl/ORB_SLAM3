@@ -1416,6 +1416,27 @@ void System::SaveDebugData(const int &initIdx)
 }
 
 
+void System::EnableOdometry(const Sophus::SE3f &Tbc, const OdometryParams &params)
+{
+    if(mSensor!=RGBD)
+    {
+        cerr << "ERROR: wheel odometry is only supported for the RGB-D sensor." << endl;
+        exit(-1);
+    }
+    OdometryModel::Configure(Tbc, params);
+    mpTracker->EnableOdometry();
+}
+
+void System::SetFrameOdometry(bool valid, const Sophus::SE3f &Tob)
+{
+    mpTracker->SetFrameOdometry(valid, Tob);
+}
+
+void System::PrintOdometryStats()
+{
+    mpTracker->PrintOdometryStats();
+}
+
 int System::GetTrackingState()
 {
     unique_lock<mutex> lock(mMutexState);

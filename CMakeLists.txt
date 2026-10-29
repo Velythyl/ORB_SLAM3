@@ -84,6 +84,7 @@ src/GeometricTools.cc
 src/TwoViewReconstruction.cc
 src/Config.cc
 src/Settings.cc
+src/OdometryModel.cc
 include/System.h
 include/Tracking.h
 include/LocalMapping.h
@@ -98,6 +99,7 @@ include/Atlas.h
 include/Map.h
 include/MapDrawer.h
 include/Optimizer.h
+include/OdometryModel.h
 include/Frame.h
 include/KeyFrameDatabase.h
 include/Sim3Solver.h

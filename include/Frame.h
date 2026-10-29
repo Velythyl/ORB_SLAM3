@@ -198,6 +198,19 @@ public:
     // Frame timestamp.
     double mTimeStamp;
 
+    // Wheel odometry: camera pose in the odometry frame (T_ob * T_bc).
+    bool mbHasOdom = false;
+    Sophus::SE3f mToc;
+    // Odometry prior used by Optimizer::PoseOptimization: predicted Tcw and the
+    // camera-frame increment it was predicted with (sets its information).
+    bool mbOdomPrior = false;
+    Sophus::SE3f mTcwOdomPrior;
+    Sophus::SE3f mOdomPriorDelta;
+
+    // Drop keypoints whose flag is false (RGB-D/monocular frames only, before
+    // any matching). Used by the odometry ego-static mask.
+    void DiscardFeatures(const std::vector<bool> &vbKeep);
+
     // Calibration matrix and OpenCV distortion parameters.
     cv::Mat mK;
     Eigen::Matrix3f mK_;

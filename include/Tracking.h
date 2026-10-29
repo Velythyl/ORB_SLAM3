@@ -40,7 +40,9 @@
 #include "GeometricCamera.h"
 
 #include <mutex>
+#include <deque>
 #include <unordered_set>
+#include "OdometryModel.h"
 
 namespace ORB_SLAM3
 {
@@ -107,6 +109,12 @@ public:
     void SaveSubTrajectory(string strNameFile_frames, string strNameFile_kf, Map* pMap);
 
     float GetImageScale();
+
+    // Wheel odometry (see OdometryModel.h). EnableOdometry switches it on;
+    // SetFrameOdometry provides the base pose for the next RGB-D frame.
+    void EnableOdometry();
+    void SetFrameOdometry(bool valid, const Sophus::SE3f &Tob);
+    void PrintOdometryStats();
 
 #ifdef REGISTER_LOOP
     void RequestStop();
@@ -339,6 +347,49 @@ protected:
     //Motion Model
     bool mbVelocity{false};
     Sophus::SE3f mVelocity;
+
+    // Wheel odometry
+    bool mbUseOdometry{false};
+    bool mbPendingOdom{false};
+    Sophus::SE3f mPendingTob;
+    // Per-frame odometry prediction of Tcw (from the last frame and the odometry increment).
+    bool mbOdomPrediction{false};
+    Sophus::SE3f mTcwOdomPred;
+    // Set when the current frame pose comes from the odometry alone.
+    bool mbOdomDeadReckoned{false};
+    double mOdomLostSince{0.0};
+    double mOdomLostDistance{0.0};
+    // Map world <- odometry-camera frame, so that a restarted map is anchored to the previous one.
+    bool mbOdomAnchor{false};
+    Sophus::SE3f mTwoAnchor;
+    // Last keyframe that carries odometry (tail of the odometry chain).
+    KeyFrame* mpLastOdomKF{nullptr};
+
+    // Ego-static mask: image cells whose features stay put while the odometry says the camera moved.
+    struct OdomStaticRef
+    {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        double t;
+        Sophus::SE3f Toc;
+        std::vector<cv::KeyPoint> keys;
+        cv::Mat descriptors;
+        std::vector<float> depth;
+    };
+    std::deque<OdomStaticRef, Eigen::aligned_allocator<OdomStaticRef> > mOdomStaticHistory;
+    std::vector<int> mvOdomStaticScore;
+    int mnOdomStaticCols{0}, mnOdomStaticRows{0}, mnOdomStaticMasked{0};
+
+    // Odometry statistics
+    int mnOdomFrames{0}, mnOdomDeadReckoned{0}, mnOdomLossEvents{0}, mnOdomRecoveries{0};
+    int mnOdomRelocAccepted{0}, mnOdomRelocRejected{0}, mnOdomRetracked{0}, mnOdomLostKFs{0};
+    int mnOdomAnchoredInits{0}, mnOdomMaskedFeatures{0};
+
+    bool OdometryPredict();
+    bool TrackWithOdometry();
+    void ResetToOdometryPrediction();
+    bool OdometryGatedRelocalization();
+    bool NeedOdometryKeyFrame();
+    void UpdateEgoStaticMask();
 
     //Color order (true RGB, false BGR, ignored if grayscale)
     bool mbRGB;

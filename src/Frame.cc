@@ -91,6 +91,12 @@ Frame::Frame(const Frame &frame)
     mmProjectPoints = frame.mmProjectPoints;
     mmMatchedInImage = frame.mmMatchedInImage;
 
+    mbHasOdom = frame.mbHasOdom;
+    mToc = frame.mToc;
+    mbOdomPrior = frame.mbOdomPrior;
+    mTcwOdomPrior = frame.mTcwOdomPrior;
+    mOdomPriorDelta = frame.mOdomPriorDelta;
+
 #ifdef REGISTER_TIMES
     mTimeStereoMatch = frame.mTimeStereoMatch;
     mTimeORB_Ext = frame.mTimeORB_Ext;
@@ -413,6 +419,49 @@ void Frame::AssignFeaturesToGrid()
                 mGridRight[nGridPosX][nGridPosY].push_back(i - Nleft);
         }
     }
+}
+
+void Frame::DiscardFeatures(const std::vector<bool> &vbKeep)
+{
+    if(Nleft != -1 || (int)vbKeep.size() != N)
+        return;
+
+    vector<cv::KeyPoint> vKeys, vKeysUn;
+    vector<float> vuRight, vDepth;
+    vector<int> vKept;
+    vKeys.reserve(N); vKeysUn.reserve(N); vuRight.reserve(N); vDepth.reserve(N); vKept.reserve(N);
+    for(int i=0; i<N; i++)
+    {
+        if(!vbKeep[i])
+            continue;
+        vKept.push_back(i);
+        vKeys.push_back(mvKeys[i]);
+        vKeysUn.push_back(mvKeysUn[i]);
+        if(!mvuRight.empty()) vuRight.push_back(mvuRight[i]);
+        if(!mvDepth.empty()) vDepth.push_back(mvDepth[i]);
+    }
+    if((int)vKept.size() == N)
+        return;
+
+    cv::Mat descriptors(vKept.size(), mDescriptors.cols, mDescriptors.type());
+    for(size_t k=0; k<vKept.size(); k++)
+        mDescriptors.row(vKept[k]).copyTo(descriptors.row(k));
+
+    mvKeys.swap(vKeys);
+    mvKeysUn.swap(vKeysUn);
+    if(!mvuRight.empty()) mvuRight.swap(vuRight);
+    if(!mvDepth.empty()) mvDepth.swap(vDepth);
+    mDescriptors = descriptors;
+    N = vKept.size();
+    mvpMapPoints = vector<MapPoint*>(N,static_cast<MapPoint*>(NULL));
+    mvbOutlier = vector<bool>(N,false);
+    mBowVec.clear();
+    mFeatVec.clear();
+
+    for(int i=0;i<FRAME_GRID_COLS;i++)
+        for(int j=0; j<FRAME_GRID_ROWS; j++)
+            mGrid[i][j].clear();
+    AssignFeaturesToGrid();
 }
 
 void Frame::ExtractORB(int flag, const cv::Mat &im, const int x0, const int x1)

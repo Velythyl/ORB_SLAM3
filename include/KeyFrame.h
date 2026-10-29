@@ -409,6 +409,15 @@ public:
     KeyFrame* mPrevKF;
     KeyFrame* mNextKF;
 
+    // Wheel odometry: camera pose in the odometry frame, and the odometry
+    // chain (consecutive keyframes of one map that both carry odometry).
+    // The chain is relinked when a keyframe is culled.
+    bool mbHasOdom = false;
+    Sophus::SE3f mToc;
+    KeyFrame* GetOdomPrevKF();
+    KeyFrame* GetOdomNextKF();
+    void LinkOdomAfter(KeyFrame* pPrevKF);
+
     IMU::Preintegrated* mpImuPreintegrated;
     IMU::Calib mImuCalib;
 
@@ -478,6 +487,10 @@ protected:
     // Bad flags
     bool mbNotErase;
     bool mbToBeErased;
+
+    KeyFrame* mpOdomPrevKF = nullptr;
+    KeyFrame* mpOdomNextKF = nullptr;
+    static std::mutex mMutexOdomChain;
     bool mbBad;    
 
     float mHalfBaseline; // Only for visualization

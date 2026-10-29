@@ -40,10 +40,52 @@
 #include<mutex>
 
 #include "OptimizableTypes.h"
+#include "OdometryModel.h"
 
 
 namespace ORB_SLAM3
 {
+
+namespace
+{
+// Odometry edges between consecutive keyframes of the odometry chain whose
+// SE3 vertices (id = keyframe id <= maxKFid) are both in the graph.
+int AddOdometryEdges(g2o::SparseOptimizer &optimizer, const vector<KeyFrame*> &vpKFs, const unsigned long maxKFid)
+{
+    if(!OdometryModel::Enabled())
+        return 0;
+    const float thHuberOdom = sqrt(12.592);
+    int nEdges = 0;
+    for(KeyFrame* pKFj : vpKFs)
+    {
+        if(!pKFj || pKFj->isBad() || pKFj->mnId > maxKFid)
+            continue;
+        KeyFrame* pKFi = pKFj->GetOdomPrevKF();
+        if(!pKFi || pKFi->isBad() || pKFi->mnId > maxKFid)
+            continue;
+        g2o::VertexSE3Expmap* vi = dynamic_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFi->mnId));
+        g2o::VertexSE3Expmap* vj = dynamic_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFj->mnId));
+        if(!vi || !vj || (vi->fixed() && vj->fixed()))
+            continue;
+        g2o::SE3Quat Zij;
+        Eigen::Matrix<double,6,6> info;
+        if(!OdometryModel::RelativeMeasurement(pKFi, pKFj, Zij, info))
+            continue;
+        EdgeSE3Odom* e = new EdgeSE3Odom();
+        e->setVertex(0, vi);
+        e->setVertex(1, vj);
+        e->setMeasurement(Zij);
+        e->setInformation(info);
+        g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+        e->setRobustKernel(rk);
+        rk->setDelta(thHuberOdom);
+        optimizer.addEdge(e);
+        nEdges++;
+    }
+    return nEdges;
+}
+} // namespace
+
 bool sortByVal(const pair<MapPoint*, int> &a, const pair<MapPoint*, int> &b)
 {
     return (a.second < b.second);
@@ -273,6 +315,8 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
             vbNotIncludedMP[i]=false;
         }
     }
+
+    AddOdometryEdges(optimizer, vpKFs, maxKFid);
 
     // Optimize!
     optimizer.setVerbose(false);
@@ -996,6 +1040,16 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     if(nInitialCorrespondences<3)
         return 0;
 
+    if(pFrame->mbOdomPrior && OdometryModel::Enabled())
+    {
+        // Wheel-odometry prediction of this frame's pose.
+        EdgeSE3OdomPrior* ePrior = new EdgeSE3OdomPrior();
+        ePrior->setVertex(0, vSE3);
+        ePrior->setMeasurement(OdometryModel::ToSE3Quat(pFrame->mTcwOdomPrior));
+        ePrior->setInformation(OdometryModel::Information(pFrame->mOdomPriorDelta));
+        optimizer.addEdge(ePrior);
+    }
+
     // We perform 4 optimizations, after each optimization we classify observation as inlier/outlier
     // At the next optimization, outliers are not included, but at the end they can be classified as inliers again.
     const float chi2Mono[4]={5.991,5.991,5.991,5.991};
@@ -1173,6 +1227,24 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                 pKFi->mnBAFixedForKF=pKF->mnId;
                 if(!pKFi->isBad() && pKFi->GetMap() == pCurrentMap)
                     lFixedCameras.push_back(pKFi);
+            }
+        }
+    }
+    if(OdometryModel::Enabled())
+    {
+        // Odometry neighbours of local keyframes enter as fixed keyframes, so
+        // that every local keyframe is tied to the odometry chain.
+        for(list<KeyFrame*>::iterator lit=lLocalKeyFrames.begin(), lend=lLocalKeyFrames.end(); lit!=lend; lit++)
+        {
+            KeyFrame* vpNeigh[2] = {(*lit)->GetOdomPrevKF(), (*lit)->GetOdomNextKF()};
+            for(KeyFrame* pKFn : vpNeigh)
+            {
+                if(!pKFn || pKFn->isBad() || pKFn->GetMap() != pCurrentMap)
+                    continue;
+                if(pKFn->mnBALocalForKF==pKF->mnId || pKFn->mnBAFixedForKF==pKF->mnId)
+                    continue;
+                pKFn->mnBAFixedForKF = pKF->mnId;
+                lFixedCameras.push_back(pKFn);
             }
         }
     }
@@ -1402,6 +1474,13 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         }
     }
     num_edges = nEdges;
+
+    if(OdometryModel::Enabled())
+    {
+        vector<KeyFrame*> vpGraphKFs(lLocalKeyFrames.begin(), lLocalKeyFrames.end());
+        vpGraphKFs.insert(vpGraphKFs.end(), lFixedCameras.begin(), lFixedCameras.end());
+        AddOdometryEdges(optimizer, vpGraphKFs, maxKFid);
+    }
 
     if(pbStopFlag)
         if(*pbStopFlag)
@@ -1722,6 +1801,24 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
             ep->setMeasurement(Spi);
             ep->information() = matLambda;
             optimizer.addEdge(ep);
+        }
+
+        // Odometry edges, weighted like the other essential-graph edges but
+        // measured by the odometry.
+        if(OdometryModel::Enabled() && !pKF->isBad() && pKF->mbHasOdom)
+        {
+            KeyFrame* pPrevKF = pKF->GetOdomPrevKF();
+            if(pPrevKF && !pPrevKF->isBad() && pPrevKF->mbHasOdom && pPrevKF->mnId<=nMaxKFid && vpVertices[pPrevKF->mnId] && vpVertices[nIDi])
+            {
+                const Sophus::SE3d Tpi = (pPrevKF->mToc.inverse() * pKF->mToc).cast<double>();
+                const g2o::Sim3 Spi(Tpi.unit_quaternion(), Tpi.translation(), 1.0);
+                g2o::EdgeSim3* eo = new g2o::EdgeSim3();
+                eo->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pPrevKF->mnId)));
+                eo->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
+                eo->setMeasurement(Spi);
+                eo->information() = matLambda;
+                optimizer.addEdge(eo);
+            }
         }
     }
 

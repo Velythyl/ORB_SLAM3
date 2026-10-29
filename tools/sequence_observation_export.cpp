@@ -1,4 +1,7 @@
 #include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdlib>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -145,6 +148,132 @@ static vector<ImageEntry> load_manifest_images(const string& manifest, const str
         entries.push_back(entry);
     }
     return entries;
+}
+
+struct OdometryRow {
+    double timestamp = 0.0;
+    Sophus::SE3f Tob;
+};
+
+// TUM rows "t x y z qx qy qz qw": base pose in the odometry frame.
+static vector<OdometryRow> load_odometry(const string& path) {
+    ifstream in(path);
+    if (!in) {
+        throw runtime_error("failed to open odometry file " + path);
+    }
+    vector<OdometryRow> rows;
+    string line;
+    int line_number = 0;
+    while (getline(in, line)) {
+        ++line_number;
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        istringstream ss(line);
+        double t, x, y, z, qx, qy, qz, qw;
+        if (!(ss >> t >> x >> y >> z >> qx >> qy >> qz >> qw)) {
+            throw runtime_error("invalid odometry row " + to_string(line_number) + " in " + path);
+        }
+        Eigen::Quaterniond q(qw, qx, qy, qz);
+        if (q.norm() < 1e-6) {
+            throw runtime_error("zero quaternion in odometry row " + to_string(line_number));
+        }
+        q.normalize();
+        OdometryRow row;
+        row.timestamp = t;
+        row.Tob = Sophus::SE3f(q.cast<float>(), Eigen::Vector3f(x, y, z));
+        rows.push_back(row);
+    }
+    sort(rows.begin(), rows.end(), [](const OdometryRow& a, const OdometryRow& b) { return a.timestamp < b.timestamp; });
+    return rows;
+}
+
+// Rows are already interpolated to the colour stamps; match within 1 ms.
+static const OdometryRow* find_odometry(const vector<OdometryRow>& rows, double timestamp) {
+    const double tolerance = 1e-3;
+    auto it = lower_bound(rows.begin(), rows.end(), timestamp,
+                          [](const OdometryRow& row, double t) { return row.timestamp < t; });
+    const OdometryRow* best = nullptr;
+    double best_dt = tolerance;
+    if (it != rows.end() && fabs(it->timestamp - timestamp) <= best_dt) {
+        best = &*it;
+        best_dt = fabs(it->timestamp - timestamp);
+    }
+    if (it != rows.begin()) {
+        --it;
+        if (fabs(it->timestamp - timestamp) <= best_dt) {
+            best = &*it;
+        }
+    }
+    return best;
+}
+
+// {"T_base_camera": [[...],[...],[...],[...]]} (or 16 flat numbers), row-major,
+// camera optical frame -> base frame.
+static Sophus::SE3f load_base_to_camera(const string& path) {
+    ifstream in(path);
+    if (!in) {
+        throw runtime_error("failed to open " + path);
+    }
+    const string text((istreambuf_iterator<char>(in)), istreambuf_iterator<char>());
+    const string key = "\"T_base_camera\"";
+    size_t pos = text.find(key);
+    if (pos == string::npos) {
+        throw runtime_error(path + " has no \"T_base_camera\" key");
+    }
+    pos = text.find('[', pos + key.size());
+    if (pos == string::npos) {
+        throw runtime_error("T_base_camera in " + path + " is not an array");
+    }
+    vector<double> values;
+    int depth = 0;
+    const char* begin = text.c_str();
+    for (size_t i = pos; i < text.size(); ++i) {
+        const char ch = text[i];
+        if (ch == '[') {
+            ++depth;
+        } else if (ch == ']') {
+            if (--depth == 0) {
+                break;
+            }
+        } else if (ch == '-' || ch == '+' || ch == '.' || isdigit(static_cast<unsigned char>(ch))) {
+            char* end = nullptr;
+            const double value = strtod(begin + i, &end);
+            if (end == begin + i) {
+                throw runtime_error("unparsable number in T_base_camera of " + path);
+            }
+            values.push_back(value);
+            i = static_cast<size_t>(end - begin) - 1;
+        }
+    }
+    if (values.size() != 16) {
+        throw runtime_error("T_base_camera in " + path + " must hold 16 numbers, found " + to_string(values.size()));
+    }
+    Eigen::Matrix4d T;
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            T(r, c) = values[4 * r + c];
+        }
+    }
+    if ((T.row(3) - Eigen::RowVector4d(0, 0, 0, 1)).norm() > 1e-6) {
+        throw runtime_error("T_base_camera in " + path + " must end with the row [0, 0, 0, 1]");
+    }
+    const Eigen::Matrix3d R = T.block<3, 3>(0, 0);
+    if ((R.transpose() * R - Eigen::Matrix3d::Identity()).norm() > 1e-3 || R.determinant() < 0) {
+        throw runtime_error("T_base_camera in " + path + " does not hold a rotation");
+    }
+    Eigen::Quaterniond q(R);
+    q.normalize();
+    return Sophus::SE3f(q.cast<float>(), T.block<3, 1>(0, 3).cast<float>());
+}
+
+static float parse_positive(const string& flag, const char* value) {
+    char* end = nullptr;
+    const float parsed = strtof(value, &end);
+    if (end == value || *end != '\0' || !(parsed > 0.0f)) {
+        throw runtime_error(flag + " requires a positive number");
+    }
+    return parsed;
 }
 
 static string json_escape(const string& value) {
@@ -416,6 +545,7 @@ int main(int argc, char** argv) {
     if (argc < 7) {
         cerr << "usage: sequence_observation_export SENSOR VOCAB SETTINGS DATASET OBSERVATIONS_JSONL MAP_POINTS_CSV [ASSOCIATION]\n";
         cerr << "       sequence_observation_export SENSOR VOCAB SETTINGS DATASET OBSERVATIONS_JSONL MAP_POINTS_CSV [--manifest MANIFEST] [--no-realtime] [--sync-export]\n";
+        cerr << "           [--odometry TUM_FILE --base-to-camera JSON] [--odom-trans-sigma S] [--odom-rot-sigma S] [--no-odom-static-mask]\n";
         return 2;
     }
 
@@ -429,6 +559,9 @@ int main(int argc, char** argv) {
     string manifest;
     bool realtime = true;
     bool async_export = true;
+    string odometry_path;
+    string base_to_camera_path;
+    ORB_SLAM3::OdometryParams odometry_params;
     for (int arg = 7; arg < argc; ++arg) {
         const string value = argv[arg];
         if (value == "--manifest") {
@@ -437,6 +570,27 @@ int main(int argc, char** argv) {
                 return 2;
             }
             manifest = argv[arg];
+        } else if (value == "--odometry" || value == "--base-to-camera" || value == "--odom-trans-sigma" || value == "--odom-rot-sigma") {
+            if (++arg == argc) {
+                cerr << "error: " << value << " requires a value\n";
+                return 2;
+            }
+            try {
+                if (value == "--odometry") {
+                    odometry_path = argv[arg];
+                } else if (value == "--base-to-camera") {
+                    base_to_camera_path = argv[arg];
+                } else if (value == "--odom-trans-sigma") {
+                    odometry_params.transSigma = parse_positive(value, argv[arg]);
+                } else {
+                    odometry_params.rotSigma = parse_positive(value, argv[arg]);
+                }
+            } catch (const exception& exc) {
+                cerr << "error: " << exc.what() << "\n";
+                return 2;
+            }
+        } else if (value == "--no-odom-static-mask") {
+            odometry_params.staticMask = false;
         } else if (value == "--no-realtime") {
             realtime = false;
         } else if (value == "--sync-export") {
@@ -457,6 +611,22 @@ int main(int argc, char** argv) {
         if (stereo && manifest.empty()) {
             throw runtime_error("stereo runs require --manifest with timestamp left_image right_image rows");
         }
+        const bool use_odometry = !odometry_path.empty();
+        if (use_odometry != !base_to_camera_path.empty()) {
+            throw runtime_error("--odometry and --base-to-camera must be given together");
+        }
+        if (use_odometry && !rgbd) {
+            throw runtime_error("--odometry is only supported for the rgbd sensor");
+        }
+        vector<OdometryRow> odometry;
+        Sophus::SE3f T_base_camera;
+        if (use_odometry) {
+            odometry = load_odometry(odometry_path);
+            T_base_camera = load_base_to_camera(base_to_camera_path);
+            if (odometry.empty()) {
+                throw runtime_error("no odometry rows in " + odometry_path);
+            }
+        }
 
         vector<ImageEntry> entries;
         if (!manifest.empty()) {
@@ -470,6 +640,10 @@ int main(int argc, char** argv) {
 
         ORB_SLAM3::System slam(vocabulary, settings, system_sensor, false);
         const float image_scale = slam.GetImageScale();
+        size_t frames_with_odometry = 0;
+        if (use_odometry) {
+            slam.EnableOdometry(T_base_camera, odometry_params);
+        }
 
         ofstream observations(observations_path);
         if (!observations) {
@@ -525,6 +699,13 @@ int main(int argc, char** argv) {
             const auto start = chrono::steady_clock::now();
             Sophus::SE3f Tcw;
             if (rgbd) {
+                if (use_odometry) {
+                    const OdometryRow* row = find_odometry(odometry, entry.timestamp);
+                    slam.SetFrameOdometry(row != nullptr, row ? row->Tob : Sophus::SE3f());
+                    if (row) {
+                        ++frames_with_odometry;
+                    }
+                }
                 Tcw = slam.TrackRGBD(image, depth, entry.timestamp);
             } else if (stereo) {
                 Tcw = slam.TrackStereo(image, right, entry.timestamp);
@@ -568,6 +749,10 @@ int main(int argc, char** argv) {
         cout << "-------" << endl << endl;
         cout << "median tracking time: " << tracking_times[tracking_times.size() / 2] << endl;
         cout << "mean tracking time: " << total_time / tracking_times.size() << endl;
+        if (use_odometry) {
+            cout << "frames matched to odometry: " << frames_with_odometry << " of " << entries.size() << endl;
+            slam.PrintOdometryStats();
+        }
 
         save_trajectories(slam, sensor);
         write_map_points_csv(map_points_path, map_points);
